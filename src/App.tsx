@@ -35,6 +35,21 @@ type Tracker = {
   anchorClockMs: number
 }
 
+type SavedLookup = {
+  id: string
+  sourceName: string
+  surface: string
+  reading: string
+  meaning: string
+  sentence: string
+  startMs: number
+  endMs: number
+  lookedUpAt: string
+  selected: boolean
+}
+
+const savedLookupsKey = 'subtitle-companion:saved-lookups:v1'
+
 const seedDictionary: DictionaryEntry[] = [
   { surface: '私', reading: 'わたし', meaning: 'I; me' },
   { surface: '僕', reading: 'ぼく', meaning: 'I; me' },
@@ -244,6 +259,41 @@ function formatTime(ms: number) {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
+function makeLookupId(source: string, line: SubtitleLine, token: Token) {
+  return [source, line.startMs, line.endMs, token.surface, line.plainText].join('|')
+}
+
+function loadSavedLookups(): SavedLookup[] {
+  try {
+    const raw = localStorage.getItem(savedLookupsKey)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function escapeTsv(value: string | number) {
+  return String(value).replace(/\t/g, ' ').replace(/\r?\n/g, '<br>')
+}
+
+function buildAnkiTsv(lookups: SavedLookup[]) {
+  const rows = [
+    ['Word', 'Reading', 'Meaning', 'Sentence', 'Timing', 'Source'],
+    ...lookups.map((lookup) => [
+      lookup.surface,
+      lookup.reading,
+      lookup.meaning,
+      lookup.sentence,
+      `${formatTime(lookup.startMs)}-${formatTime(lookup.endMs)}`,
+      lookup.sourceName,
+    ]),
+  ]
+
+  return rows.map((row) => row.map(escapeTsv).join('\t')).join('\n')
+}
+
 function App() {
   const [sourceName, setSourceName] = useState('')
   const [url, setUrl] = useState('')
@@ -257,6 +307,7 @@ function App() {
   const [dictionaryStatus, setDictionaryStatus] = useState('Loading full JMdict...')
   const [tokenizer, setTokenizer] = useState<Tokenizer<IpadicFeatures> | null>(null)
   const [tokenizerStatus, setTokenizerStatus] = useState('Loading Kuromoji tokenizer...')
+  const [savedLookups, setSavedLookups] = useState<SavedLookup[]>(() => loadSavedLookups())
   const liveRef = useRef<HTMLLIElement | null>(null)
 
   const current = currentSubtitle(lines, tracker, tick)
@@ -297,6 +348,10 @@ function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem(savedLookupsKey, JSON.stringify(savedLookups))
+  }, [savedLookups])
 
   useEffect(() => {
     let cancelled = false
@@ -373,6 +428,58 @@ function App() {
     window.requestAnimationFrame(() => liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
   }
 
+  function saveLookup(token: Token, line: SubtitleLine) {
+    const meaning = token.entry?.meaning ?? 'No dictionary match found.'
+    const reading = token.reading ?? token.entry?.reading ?? ''
+    const id = makeLookupId(sourceName, line, token)
+    const nextLookup: SavedLookup = {
+      id,
+      sourceName,
+      surface: token.surface,
+      reading,
+      meaning,
+      sentence: line.plainText,
+      startMs: line.startMs,
+      endMs: line.endMs,
+      lookedUpAt: new Date().toISOString(),
+      selected: true,
+    }
+
+    setSavedLookups((currentLookups) => {
+      const existing = currentLookups.find((lookup) => lookup.id === id)
+      if (!existing) return [nextLookup, ...currentLookups]
+      return currentLookups.map((lookup) => lookup.id === id ? { ...lookup, lookedUpAt: nextLookup.lookedUpAt, selected: true } : lookup)
+    })
+  }
+
+  function handleTokenSelect(token: Token, line: SubtitleLine) {
+    setSelectedToken(token)
+    saveLookup(token, line)
+  }
+
+  function toggleSavedLookup(id: string) {
+    setSavedLookups((currentLookups) => currentLookups.map((lookup) => lookup.id === id ? { ...lookup, selected: !lookup.selected } : lookup))
+  }
+
+  function clearSavedLookups() {
+    setSavedLookups([])
+  }
+
+  function exportSelectedLookups() {
+    const selected = savedLookups.filter((lookup) => lookup.selected)
+    if (selected.length === 0) return
+
+    const blob = new Blob([buildAnkiTsv(selected)], { type: 'text/tab-separated-values;charset=utf-8' })
+    const objectUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = 'subtitle-lookups-anki.tsv'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+  }
+
   return (
     <main className="app-shell">
       <section className="intro">
@@ -431,7 +538,7 @@ function App() {
                   </button>
                   <p className="line-text">
                     {tokens.map((token) => (
-                      <button className="token" key={token.id} type="button" onClick={() => setSelectedToken(token)}>
+                      <button className="token" key={token.id} type="button" onClick={() => handleTokenSelect(token, line)}>
                         {furigana && token.hasKanji && token.reading ? (
                           <ruby>{token.surface}<rt>{token.reading}</rt></ruby>
                         ) : token.surface}
@@ -444,6 +551,40 @@ function App() {
           </ol>
         </section>
       ) : null}
+
+      <section className="saved-lookups">
+        <header className="saved-lookups-header">
+          <div>
+            <p className="eyebrow">Saved lookups</p>
+            <h2>{savedLookups.length} saved · {savedLookups.filter((lookup) => lookup.selected).length} selected</h2>
+          </div>
+          <div className="saved-actions">
+            <button type="button" onClick={exportSelectedLookups} disabled={savedLookups.every((lookup) => !lookup.selected)}>Export selected TSV</button>
+            <button className="secondary" type="button" onClick={clearSavedLookups} disabled={savedLookups.length === 0}>Clear</button>
+          </div>
+        </header>
+
+        {savedLookups.length === 0 ? (
+          <p className="empty-lookups">Tap words in subtitles and they will appear here for Anki export.</p>
+        ) : (
+          <ol className="saved-list">
+            {savedLookups.map((lookup) => (
+              <li className="saved-item" key={lookup.id}>
+                <label className="saved-check">
+                  <input checked={lookup.selected} type="checkbox" onChange={() => toggleSavedLookup(lookup.id)} />
+                  <span>
+                    <strong>{lookup.surface}</strong>
+                    {lookup.reading ? <span className="saved-reading"> {lookup.reading}</span> : null}
+                  </span>
+                </label>
+                <p>{lookup.meaning}</p>
+                <blockquote>{lookup.sentence}</blockquote>
+                <small>{formatTime(lookup.startMs)}-{formatTime(lookup.endMs)} · {lookup.sourceName}</small>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
 
       {selectedToken ? (
         <aside className="lookup" role="dialog" aria-label="Dictionary lookup">
