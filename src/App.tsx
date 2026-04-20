@@ -110,18 +110,21 @@ function stripAssTags(text: string) {
 
 function parseAss(input: string): SubtitleLine[] {
   const rows = input.split(/\r?\n/)
-  const format = rows.find((row) => row.startsWith('Format:'))
+  const format = rows.find((row) => row.trim().startsWith('Format:'))
   const fields = format
     ? format.replace('Format:', '').split(',').map((field) => field.trim().toLowerCase())
     : ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text']
   const startIndex = fields.indexOf('start')
   const endIndex = fields.indexOf('end')
   const textIndex = fields.indexOf('text')
+  if (startIndex === -1 || endIndex === -1 || textIndex === -1) {
+    throw new Error('ASS file is missing Start, End, or Text fields')
+  }
 
   return rows
-    .filter((row) => row.startsWith('Dialogue:'))
+    .filter((row) => row.trim().startsWith('Dialogue:'))
     .map((row, index) => {
-      const columns = row.replace('Dialogue:', '').trim().split(',')
+      const columns = row.trim().replace('Dialogue:', '').trim().split(',')
       const text = stripAssTags(columns.slice(textIndex).join(','))
       return {
         id: `ass-${index}`,
@@ -134,12 +137,19 @@ function parseAss(input: string): SubtitleLine[] {
     })
 }
 
-function parseSubtitle(name: string, text: string) {
-  const lower = name.toLowerCase()
+function detectSubtitleFormat(name: string, text: string) {
+  const lower = name.toLowerCase().split(/[?#]/)[0]
   if (lower.endsWith('.srt')) return parseSrt(text)
   if (lower.endsWith('.vtt')) return parseVtt(text)
   if (lower.endsWith('.ass')) return parseAss(text)
+  if (/^WEBVTT/m.test(text)) return parseVtt(text)
+  if (/\[Events\][\s\S]*Dialogue:/m.test(text)) return parseAss(text)
+  if (/\d{2}:\d{2}:\d{2},\d{3}\s*-->/m.test(text)) return parseSrt(text)
   throw new Error('Unsupported subtitle format. Try .srt, .vtt, or .ass.')
+}
+
+function parseSubtitle(name: string, text: string) {
+  return detectSubtitleFormat(name, text)
 }
 
 function tokenize(text: string): Token[] {
@@ -162,7 +172,7 @@ function virtualTime(tracker: Tracker, now = performance.now()) {
 
 function currentSubtitle(lines: SubtitleLine[], tracker: Tracker, now = performance.now()) {
   const ms = virtualTime(tracker, now)
-  return lines.find((line) => ms >= line.startMs && ms <= line.endMs) ?? lines.find((line) => line.startMs > ms) ?? lines.at(-1)
+  return lines.find((line) => ms >= line.startMs && ms <= line.endMs)
 }
 
 function formatTime(ms: number) {
@@ -206,17 +216,24 @@ function App() {
   }
 
   async function handleUrlLoad() {
+    let text = ''
     try {
       const response = await fetch(url)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const text = await response.text()
+      text = await response.text()
+    } catch {
+      setError('This URL could not be loaded from the browser. The site may block cross-origin requests. Download the subtitle file and upload it here instead.')
+      return
+    }
+
+    try {
       const parsed = parseSubtitle(url, text)
       setLines(parsed)
       setSourceName(url)
       setError('')
       setTracker({ status: 'idle', anchorSubtitleMs: parsed[0]?.startMs ?? 0, anchorClockMs: performance.now() })
-    } catch {
-      setError('This URL could not be loaded from the browser. The site may block cross-origin requests. Download the subtitle file and upload it here instead.')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unsupported subtitle format. Try .srt, .vtt, or .ass.')
     }
   }
 
