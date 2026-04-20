@@ -146,7 +146,9 @@ function stripAssTags(text: string) {
 
 function parseAss(input: string): SubtitleLine[] {
   const rows = input.split(/\r?\n/)
-  const format = rows.find((row) => row.trim().startsWith('Format:'))
+  const eventsIndex = rows.findIndex((row) => row.trim().toLowerCase() === '[events]')
+  const eventRows = eventsIndex >= 0 ? rows.slice(eventsIndex + 1) : rows
+  const format = eventRows.find((row) => row.trim().startsWith('Format:'))
   const fields = format
     ? format.replace('Format:', '').split(',').map((field) => field.trim().toLowerCase())
     : ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text']
@@ -157,7 +159,7 @@ function parseAss(input: string): SubtitleLine[] {
     throw new Error('ASS file is missing Start, End, or Text fields')
   }
 
-  return rows
+  return eventRows
     .filter((row) => row.trim().startsWith('Dialogue:'))
     .map((row, index) => {
       const columns = row.trim().replace('Dialogue:', '').trim().split(',')
