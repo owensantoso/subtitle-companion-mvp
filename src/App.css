@@ -101,6 +101,17 @@ button:hover {
   background: rgba(255, 64, 64, 0.16);
 }
 
+.hint,
+.dictionary-status {
+  color: #cdb99d;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.dictionary-status {
+  margin: 0;
+}
+
 .reader {
   overflow: hidden;
   border-radius: 30px;

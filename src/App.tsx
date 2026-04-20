@@ -17,6 +17,8 @@ type DictionaryEntry = {
   meaning: string
 }
 
+type DictionaryBuckets = Record<string, [string, string, string][]>
+
 type Token = {
   id: string
   surface: string
@@ -29,7 +31,7 @@ type Tracker = {
   anchorClockMs: number
 }
 
-const dictionary: DictionaryEntry[] = [
+const seedDictionary: DictionaryEntry[] = [
   { surface: '私', reading: 'わたし', meaning: 'I; me' },
   { surface: '僕', reading: 'ぼく', meaning: 'I; me' },
   { surface: '猫', reading: 'ねこ', meaning: 'cat' },
@@ -46,8 +48,23 @@ const dictionary: DictionaryEntry[] = [
   { surface: '好き', reading: 'すき', meaning: 'liked; fond of' },
 ]
 
-const dictionaryBySurface = new Map(dictionary.map((entry) => [entry.surface, entry]))
-const dictionarySurfaces = [...dictionaryBySurface.keys()].sort((a, b) => b.length - a.length)
+function buildSeedBuckets() {
+  const buckets: DictionaryBuckets = {}
+
+  for (const entry of seedDictionary) {
+    const first = [...entry.surface][0]
+    buckets[first] ??= []
+    buckets[first].push([entry.surface, entry.reading, entry.meaning])
+  }
+
+  for (const entries of Object.values(buckets)) {
+    entries.sort((a, b) => b[0].length - a[0].length)
+  }
+
+  return buckets
+}
+
+const seedBuckets = buildSeedBuckets()
 
 function parseSrtTime(value: string) {
   const match = value.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})/)
@@ -152,14 +169,24 @@ function parseSubtitle(name: string, text: string) {
   return detectSubtitleFormat(name, text)
 }
 
-function tokenize(text: string): Token[] {
-  const tokens: Token[] = []
-  let index = 0
+function lookupSurface(surface: string, buckets: DictionaryBuckets): DictionaryEntry | undefined {
+  const first = [...surface][0]
+  const entry = buckets[first]?.find((candidate) => candidate[0] === surface)
+  return entry ? { surface: entry[0], reading: entry[1], meaning: entry[2] } : undefined
+}
 
-  while (index < text.length) {
-    const surface = dictionarySurfaces.find((candidate) => text.startsWith(candidate, index)) ?? text[index]
-    tokens.push({ id: `${index}-${surface}`, surface, entry: dictionaryBySurface.get(surface) })
-    index += surface.length
+function tokenize(text: string, buckets: DictionaryBuckets): Token[] {
+  const tokens: Token[] = []
+  const chars = [...text]
+
+  let index = 0
+  while (index < chars.length) {
+    const remaining = chars.slice(index).join('')
+    const candidates = buckets[chars[index]] ?? []
+    const match = candidates.find(([surface]) => remaining.startsWith(surface))
+    const surface = match?.[0] ?? chars[index]
+    tokens.push({ id: `${index}-${surface}`, surface, entry: match ? { surface: match[0], reading: match[1], meaning: match[2] } : lookupSurface(surface, buckets) })
+    index += [...surface].length
   }
 
   return tokens
@@ -191,14 +218,41 @@ function App() {
   const [tick, setTick] = useState(performance.now())
   const [selectedToken, setSelectedToken] = useState<Token | null>(null)
   const [furigana, setFurigana] = useState(true)
+  const [dictionaryBuckets, setDictionaryBuckets] = useState<DictionaryBuckets>(seedBuckets)
+  const [dictionaryStatus, setDictionaryStatus] = useState('Loading full JMdict...')
   const liveRef = useRef<HTMLLIElement | null>(null)
 
   const current = currentSubtitle(lines, tracker, tick)
-  const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText) })), [lines])
+  const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets) })), [dictionaryBuckets, lines])
 
   useEffect(() => {
     const id = window.setInterval(() => setTick(performance.now()), 250)
     return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadDictionary() {
+      try {
+        const response = await fetch('./dictionaries/jmdict-eng-lookup.json')
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data = await response.json() as { entryCount: number; buckets: DictionaryBuckets }
+        if (!cancelled) {
+          setDictionaryBuckets(data.buckets)
+          setDictionaryStatus(`JMdict loaded: ${data.entryCount.toLocaleString()} entries`)
+        }
+      } catch {
+        if (!cancelled) {
+          setDictionaryStatus('Using tiny fallback dictionary; full JMdict could not load')
+        }
+      }
+    }
+
+    void loadDictionary()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   async function handleFile(file?: File) {
@@ -261,7 +315,8 @@ function App() {
       <section className="import-card">
         <label>
           Subtitle file
-          <input accept=".srt,.vtt,.ass" type="file" onChange={(event) => void handleFile(event.target.files?.[0])} />
+          <input type="file" onChange={(event) => void handleFile(event.target.files?.[0])} />
+          <span className="hint">iOS Safari can hide unknown extensions, so this picker allows any file and validates after selection.</span>
         </label>
 
         <label>
@@ -273,6 +328,7 @@ function App() {
         </label>
 
         {error ? <p className="error">{error}</p> : null}
+        <p className="dictionary-status">{dictionaryStatus}</p>
       </section>
 
       {lines.length > 0 ? (

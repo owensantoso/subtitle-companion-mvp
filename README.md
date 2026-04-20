@@ -8,16 +8,28 @@ A proof-of-concept static web app for following Japanese subtitles on a phone wh
 - Try loading a direct subtitle URL when the host allows browser fetches.
 - Start, pause, and re-anchor a local virtual subtitle clock.
 - Highlight the current subtitle line.
-- Tap known Japanese words for reading and English meaning.
-- Toggle furigana for known words.
+- Tap Japanese words for reading and English meaning from a static JMdict-derived English lookup.
+- Toggle furigana for words found in the dictionary.
 - Deploy as static assets to GitHub Pages or Vercel.
 
 ## POC Limits
 
-- Dictionary coverage is intentionally tiny.
+- The JMdict lookup is large: about 35 MB raw, about 10.6 MB gzip.
+- Tokenization is still a simple longest-match lookup, not a proper morphological analyzer.
 - URL import is best effort and blocked by many subtitle hosts because of CORS.
 - ASS parsing extracts basic dialogue text and ignores styling/karaoke effects.
 - There is no automatic audio/STT sync, backend, account system, or LLM explanation flow.
+
+## Rebuilding The Dictionary
+
+The committed lookup file was generated from JMdict Simplified English `3.6.2+20260413165336`.
+
+```bash
+mkdir -p tmp/jmdict public/dictionaries
+curl -L -o tmp/jmdict/jmdict-eng.json.tgz 'https://github.com/scriptin/jmdict-simplified/releases/download/3.6.2%2B20260413165336/jmdict-eng-3.6.2%2B20260413165336.json.tgz'
+tar -xzf tmp/jmdict/jmdict-eng.json.tgz -C tmp/jmdict
+node scripts/build-jmdict-lookup.mjs
+```
 
 ## Local Development
 
