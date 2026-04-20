@@ -147,11 +147,17 @@ function stripAssTags(text: string) {
 function parseAss(input: string): SubtitleLine[] {
   const rows = input.split(/\r?\n/)
   const eventsIndex = rows.findIndex((row) => row.trim().toLowerCase() === '[events]')
-  const eventRows = eventsIndex >= 0 ? rows.slice(eventsIndex + 1) : rows
-  const format = eventRows.find((row) => row.trim().startsWith('Format:'))
-  const fields = format
-    ? format.replace('Format:', '').split(',').map((field) => field.trim().toLowerCase())
-    : ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text']
+  const eventRows = (eventsIndex >= 0 ? rows.slice(eventsIndex + 1) : rows)
+    .filter((row) => !row.trim().startsWith(';'))
+  const nextSectionIndex = eventRows.findIndex((row) => /^\s*\[[^\]]+]\s*$/.test(row))
+  const scopedEventRows = nextSectionIndex >= 0 ? eventRows.slice(0, nextSectionIndex) : eventRows
+  const fallbackFields = ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text']
+  const formatCandidates = scopedEventRows
+    .filter((row) => row.trim().toLowerCase().startsWith('format:'))
+    .map((row) => row.trim().replace(/^Format:/i, '').split(',').map((field) => field.trim().toLowerCase()))
+  const fields = formatCandidates.find((candidate) => (
+    candidate.includes('start') && candidate.includes('end') && candidate.includes('text')
+  )) ?? fallbackFields
   const startIndex = fields.indexOf('start')
   const endIndex = fields.indexOf('end')
   const textIndex = fields.indexOf('text')
@@ -159,7 +165,7 @@ function parseAss(input: string): SubtitleLine[] {
     throw new Error('ASS file is missing Start, End, or Text fields')
   }
 
-  return eventRows
+  return scopedEventRows
     .filter((row) => row.trim().startsWith('Dialogue:'))
     .map((row, index) => {
       const columns = row.trim().replace('Dialogue:', '').trim().split(',')
