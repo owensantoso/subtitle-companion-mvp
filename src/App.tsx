@@ -1,5 +1,7 @@
 /* eslint-disable react-hooks/purity */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import kuromoji from 'kuromoji/build/kuromoji.js'
+import type { IpadicFeatures, Tokenizer } from 'kuromoji'
 import './App.css'
 
 type SubtitleLine = {
@@ -22,6 +24,8 @@ type DictionaryBuckets = Record<string, [string, string, string][]>
 type Token = {
   id: string
   surface: string
+  reading?: string
+  hasKanji: boolean
   entry?: DictionaryEntry
 }
 
@@ -175,7 +179,20 @@ function lookupSurface(surface: string, buckets: DictionaryBuckets): DictionaryE
   return entry ? { surface: entry[0], reading: entry[1], meaning: entry[2] } : undefined
 }
 
-function tokenize(text: string, buckets: DictionaryBuckets): Token[] {
+function containsKanji(text: string) {
+  return /\p{Script=Han}/u.test(text)
+}
+
+function katakanaToHiragana(text?: string) {
+  if (!text) return undefined
+  return text.replace(/[\u30a1-\u30f6]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0x60))
+}
+
+function lookupToken(surface: string, basicForm: string | undefined, buckets: DictionaryBuckets) {
+  return lookupSurface(surface, buckets) ?? (basicForm && basicForm !== '*' ? lookupSurface(basicForm, buckets) : undefined)
+}
+
+function fallbackTokenize(text: string, buckets: DictionaryBuckets): Token[] {
   const tokens: Token[] = []
   const chars = [...text]
 
@@ -185,11 +202,29 @@ function tokenize(text: string, buckets: DictionaryBuckets): Token[] {
     const candidates = buckets[chars[index]] ?? []
     const match = candidates.find(([surface]) => remaining.startsWith(surface))
     const surface = match?.[0] ?? chars[index]
-    tokens.push({ id: `${index}-${surface}`, surface, entry: match ? { surface: match[0], reading: match[1], meaning: match[2] } : lookupSurface(surface, buckets) })
+    const entry = match ? { surface: match[0], reading: match[1], meaning: match[2] } : lookupSurface(surface, buckets)
+    tokens.push({ id: `${index}-${surface}`, surface, reading: entry?.reading, hasKanji: containsKanji(surface), entry })
     index += [...surface].length
   }
 
   return tokens
+}
+
+function tokenize(text: string, buckets: DictionaryBuckets, tokenizer: Tokenizer<IpadicFeatures> | null): Token[] {
+  if (!tokenizer) return fallbackTokenize(text, buckets)
+
+  return tokenizer.tokenize(text).map((part, index) => {
+    const surface = part.surface_form
+    const entry = lookupToken(surface, part.basic_form, buckets)
+    const reading = entry?.reading ?? katakanaToHiragana(part.reading)
+    return {
+      id: `${index}-${surface}-${part.word_position}`,
+      surface,
+      reading,
+      hasKanji: containsKanji(surface),
+      entry,
+    }
+  })
 }
 
 function virtualTime(tracker: Tracker, now = performance.now()) {
@@ -220,15 +255,23 @@ function App() {
   const [furigana, setFurigana] = useState(true)
   const [dictionaryBuckets, setDictionaryBuckets] = useState<DictionaryBuckets>(seedBuckets)
   const [dictionaryStatus, setDictionaryStatus] = useState('Loading full JMdict...')
+  const [tokenizer, setTokenizer] = useState<Tokenizer<IpadicFeatures> | null>(null)
+  const [tokenizerStatus, setTokenizerStatus] = useState('Loading Kuromoji tokenizer...')
   const liveRef = useRef<HTMLLIElement | null>(null)
 
   const current = currentSubtitle(lines, tracker, tick)
-  const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets) })), [dictionaryBuckets, lines])
+  const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets, tokenizer) })), [dictionaryBuckets, lines, tokenizer])
 
   useEffect(() => {
     const id = window.setInterval(() => setTick(performance.now()), 250)
     return () => window.clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    if (tracker.status === 'running' && current) {
+      liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+  }, [current, tracker.status])
 
   useEffect(() => {
     let cancelled = false
@@ -250,6 +293,24 @@ function App() {
     }
 
     void loadDictionary()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    kuromoji.builder({ dicPath: './kuromoji/' }).build((err, builtTokenizer) => {
+      if (cancelled) return
+      if (err) {
+        setTokenizerStatus('Using fallback tokenizer; Kuromoji could not load')
+        return
+      }
+      setTokenizer(builtTokenizer)
+      setTokenizerStatus('Kuromoji tokenizer loaded')
+    })
+
     return () => {
       cancelled = true
     }
@@ -299,6 +360,14 @@ function App() {
     setTracker((state) => ({ status: 'paused', anchorSubtitleMs: virtualTime(state), anchorClockMs: performance.now() }))
   }
 
+  function togglePlayback() {
+    if (tracker.status === 'running') {
+      pause()
+    } else {
+      start()
+    }
+  }
+
   function reanchor(line: SubtitleLine) {
     setTracker({ status: 'running', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
     window.requestAnimationFrame(() => liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
@@ -329,6 +398,7 @@ function App() {
 
         {error ? <p className="error">{error}</p> : null}
         <p className="dictionary-status">{dictionaryStatus}</p>
+        <p className="dictionary-status">{tokenizerStatus}</p>
       </section>
 
       {lines.length > 0 ? (
@@ -345,8 +415,7 @@ function App() {
           </header>
 
           <div className="controls">
-            <button type="button" onClick={start}>{tracker.status === 'running' ? 'Resume' : 'Start'}</button>
-            <button type="button" onClick={pause}>Pause</button>
+            <button type="button" onClick={togglePlayback}>{tracker.status === 'running' ? 'Pause' : tracker.status === 'paused' ? 'Resume' : 'Start'}</button>
             <button type="button" onClick={() => liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>Jump to live</button>
             <span>{tracker.status} · {formatTime(virtualTime(tracker, tick))}</span>
           </div>
@@ -363,8 +432,8 @@ function App() {
                   <p className="line-text">
                     {tokens.map((token) => (
                       <button className="token" key={token.id} type="button" onClick={() => setSelectedToken(token)}>
-                        {furigana && token.entry ? (
-                          <ruby>{token.surface}<rt>{token.entry.reading}</rt></ruby>
+                        {furigana && token.hasKanji && token.reading ? (
+                          <ruby>{token.surface}<rt>{token.reading}</rt></ruby>
                         ) : token.surface}
                       </button>
                     ))}
@@ -383,8 +452,13 @@ function App() {
           <h2>{selectedToken.surface}</h2>
           {selectedToken.entry ? (
             <>
-              <p className="reading">{selectedToken.entry.reading}</p>
+              <p className="reading">{selectedToken.reading ?? selectedToken.entry.reading}</p>
               <p>{selectedToken.entry.meaning}</p>
+            </>
+          ) : selectedToken.reading ? (
+            <>
+              <p className="reading">{selectedToken.reading}</p>
+              <p>No dictionary match found.</p>
             </>
           ) : (
             <p>No dictionary match found.</p>

@@ -9,13 +9,15 @@ A proof-of-concept static web app for following Japanese subtitles on a phone wh
 - Start, pause, and re-anchor a local virtual subtitle clock.
 - Highlight the current subtitle line.
 - Tap Japanese words for reading and English meaning from a static JMdict-derived English lookup.
-- Toggle furigana for words found in the dictionary.
+- Segment Japanese subtitle lines with Kuromoji and fall back to longest-match lookup if Kuromoji fails.
+- Toggle furigana for kanji-containing tokens found in the dictionary.
+- Auto-scroll the highlighted current subtitle line while playback is running.
 - Deploy as static assets to GitHub Pages or Vercel.
 
 ## POC Limits
 
 - The JMdict lookup is large: about 35 MB raw, about 10.6 MB gzip.
-- Tokenization is still a simple longest-match lookup, not a proper morphological analyzer.
+- Kuromoji dictionary assets add several more static files and must be deployed with the app.
 - URL import is best effort and blocked by many subtitle hosts because of CORS.
 - ASS parsing extracts basic dialogue text and ignores styling/karaoke effects.
 - There is no automatic audio/STT sync, backend, account system, or LLM explanation flow.
