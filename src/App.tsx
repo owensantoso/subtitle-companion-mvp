@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import kuromoji from 'kuromoji/build/kuromoji.js'
 import type { IpadicFeatures, Tokenizer } from 'kuromoji'
 import {
@@ -634,6 +634,7 @@ function App() {
   const [importOpen, setImportOpen] = useState(true)
   const [subtitleQuery, setSubtitleQuery] = useState('')
   const [highlightedLineId, setHighlightedLineId] = useState('')
+  const [viewedTimestamp, setViewedTimestamp] = useState(0)
   const liveRef = useRef<HTMLLIElement | null>(null)
   const subtitleListRef = useRef<HTMLOListElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -641,6 +642,8 @@ function App() {
   const readerPreferencesRef = useRef<HTMLDetailsElement | null>(null)
   const suggestionRefs = useRef<(HTMLButtonElement | null)[]>([])
   const deepLinkFileHandledRef = useRef(false)
+  const scrollAnimationRef = useRef<number | null>(null)
+  const playheadDraggingRef = useRef(false)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
   const pendingLineRef = useRef<number | null>(Number.isFinite(linkedLine) && linkedLine >= 0 ? linkedLine : null)
 
@@ -664,7 +667,12 @@ function App() {
   }, [subtitleQuery, tokenizedLines])
   const previousEpisodeFile = useMemo(() => adjacentSubtitleFile(subtitleFiles, activeSubtitleFile, -1), [activeSubtitleFile, subtitleFiles])
   const nextEpisodeFile = useMemo(() => adjacentSubtitleFile(subtitleFiles, activeSubtitleFile, 1), [activeSubtitleFile, subtitleFiles])
+  const timelineStart = lines[0]?.startMs ?? 0
   const timelineEnd = lines.at(-1)?.endMs ?? 0
+  const playingTimestamp = Math.min(timelineEnd, Math.max(timelineStart, virtualTime(tracker, tick)))
+  const timelineDuration = Math.max(1, timelineEnd - timelineStart)
+  const playingPosition = ((playingTimestamp - timelineStart) / timelineDuration) * 100
+  const viewedPosition = ((Math.min(timelineEnd, Math.max(timelineStart, viewedTimestamp)) - timelineStart) / timelineDuration) * 100
 
   useEffect(() => {
     suggestionRefs.current[activeSuggestionIndex]?.scrollIntoView({ block: 'nearest' })
@@ -701,6 +709,8 @@ function App() {
     if (tracker.status === 'running' && current && followCurrent) {
       scrollCurrentLine(focusMode ? 'start' : 'center')
     }
+    // The scroll helper intentionally resolves the current DOM refs when invoked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, focusMode, followCurrent, tracker.status])
 
   useEffect(() => {
@@ -724,6 +734,8 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('resize', handleResize)
     }
+    // The scroll helper intentionally resolves the current DOM refs when invoked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusMode, followCurrent])
 
   useEffect(() => {
@@ -852,6 +864,8 @@ function App() {
     if (pendingLineRef.current === null || !current) return
     pendingLineRef.current = null
     window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center', false))
+    // The scroll helper intentionally resolves the current DOM refs when invoked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, focusMode])
 
   useEffect(() => {
@@ -918,23 +932,59 @@ function App() {
     setSelectedLookup(null)
     setSubtitleQuery('')
     setHighlightedLineId('')
+    setViewedTimestamp(anchorSubtitleMs)
     setFollowCurrent(true)
     setTracker({ status: 'idle', anchorSubtitleMs, anchorClockMs: performance.now() })
     setImportOpen(false)
     if (recent) recordRecentSubtitle(recent)
   }
 
-  function scrollCurrentLine(block: 'start' | 'center', smooth = true) {
+  function scrollListTo(targetTop: number, smooth = true) {
     const list = subtitleListRef.current
-    const line = liveRef.current
-    if (!list || !line) return
+    if (!list) return
 
-    const lineTop = line.offsetTop - list.offsetTop
-    const centeredTop = lineTop - (list.clientHeight - line.offsetHeight) / 2
-    list.scrollTo({
-      top: block === 'start' ? lineTop : centeredTop,
-      behavior: smooth ? 'smooth' : 'auto',
-    })
+    if (scrollAnimationRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationRef.current)
+      scrollAnimationRef.current = null
+    }
+
+    const boundedTop = Math.min(list.scrollHeight - list.clientHeight, Math.max(0, targetTop))
+    const distance = boundedTop - list.scrollTop
+    const isLongJump = Math.abs(distance) > list.clientHeight * 3
+    if (!smooth || isLongJump || Math.abs(distance) < 2 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      list.scrollTop = boundedTop
+      return
+    }
+
+    const startedAt = performance.now()
+    const startTop = list.scrollTop
+    const duration = Math.min(260, Math.max(100, Math.abs(distance) / 14))
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration)
+      const eased = 1 - (1 - progress) ** 3
+      list.scrollTop = startTop + distance * eased
+      if (progress < 1) scrollAnimationRef.current = window.requestAnimationFrame(animate)
+      else scrollAnimationRef.current = null
+    }
+    scrollAnimationRef.current = window.requestAnimationFrame(animate)
+  }
+
+  function scrollElementIntoView(element: HTMLElement, block: 'start' | 'center', smooth = true) {
+    const list = subtitleListRef.current
+    if (!list) return
+
+    const lineTop = element.offsetTop - list.offsetTop
+    const centeredTop = lineTop - (list.clientHeight - element.offsetHeight) / 2
+    scrollListTo(block === 'start' ? lineTop : centeredTop, smooth)
+  }
+
+  function scrollLineIntoView(line: SubtitleLine, block: 'start' | 'center', smooth = true) {
+    const element = subtitleListRef.current?.querySelector<HTMLElement>(`[data-line-index="${line.index}"]`)
+    if (element) scrollElementIntoView(element, block, smooth)
+  }
+
+  function scrollCurrentLine(block: 'start' | 'center', smooth = true) {
+    if (liveRef.current) scrollElementIntoView(liveRef.current, block, smooth)
   }
 
   async function handleFile(file?: File) {
@@ -1039,6 +1089,7 @@ function App() {
 
   function jumpToCurrent() {
     setFollowCurrent(true)
+    setViewedTimestamp(playingTimestamp)
     window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center'))
   }
 
@@ -1160,26 +1211,124 @@ function App() {
 
   function reanchor(line: SubtitleLine) {
     setFollowCurrent(true)
+    setViewedTimestamp(line.startMs)
     setTracker({ status: 'running', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
-    window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center'))
+    window.requestAnimationFrame(() => scrollLineIntoView(line, focusMode ? 'start' : 'center'))
   }
 
   function jumpToLine(line: SubtitleLine) {
     pendingLineRef.current = line.startMs
     setFollowCurrent(true)
+    setViewedTimestamp(line.startMs)
     setHighlightedLineId(line.id)
     setTracker({ status: 'paused', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
   }
 
-  function scrubTo(timestamp: number) {
+  function nearestLineAt(timestamp: number) {
     if (lines.length === 0) return
-    const nearestLine = lines.reduce((nearest, line) => (
+    return lines.reduce((nearest, line) => (
       Math.abs(line.startMs - timestamp) < Math.abs(nearest.startMs - timestamp) ? line : nearest
     ), lines[0])
-    pendingLineRef.current = nearestLine.startMs
-    setFollowCurrent(true)
+  }
+
+  function browseToTimestamp(timestamp: number) {
+    const nearestLine = nearestLineAt(timestamp)
+    if (!nearestLine) return
+    setFollowCurrent(false)
+    setViewedTimestamp(nearestLine.startMs)
     setHighlightedLineId(nearestLine.id)
-    setTracker({ status: 'paused', anchorSubtitleMs: timestamp, anchorClockMs: performance.now() })
+    scrollLineIntoView(nearestLine, focusMode ? 'start' : 'center')
+  }
+
+  function setPlayheadTimestamp(timestamp: number, revealLine = false) {
+    const boundedTimestamp = Math.min(timelineEnd, Math.max(timelineStart, timestamp))
+    setTracker({ status: 'paused', anchorSubtitleMs: boundedTimestamp, anchorClockMs: performance.now() })
+    if (!revealLine) return
+    const nearestLine = nearestLineAt(boundedTimestamp)
+    if (!nearestLine) return
+    setFollowCurrent(true)
+    setViewedTimestamp(nearestLine.startMs)
+    setHighlightedLineId(nearestLine.id)
+    scrollLineIntoView(nearestLine, focusMode ? 'start' : 'center')
+  }
+
+  function timestampAtPointer(event: ReactPointerEvent<HTMLElement>) {
+    const bounds = event.currentTarget.parentElement?.getBoundingClientRect()
+    if (!bounds) return playingTimestamp
+    const progress = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width))
+    return timelineStart + progress * timelineDuration
+  }
+
+  function handleTimelineBrowse(event: ReactPointerEvent<HTMLButtonElement>) {
+    browseToTimestamp(timestampAtPointer(event))
+  }
+
+  function handleTimelineBrowseKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const step = event.shiftKey ? 30_000 : 5_000
+    let nextTimestamp: number | undefined
+    if (event.key === 'ArrowLeft') nextTimestamp = viewedTimestamp - step
+    if (event.key === 'ArrowRight') nextTimestamp = viewedTimestamp + step
+    if (event.key === 'Home') nextTimestamp = timelineStart
+    if (event.key === 'End') nextTimestamp = timelineEnd
+    if (nextTimestamp === undefined) return
+    event.preventDefault()
+    browseToTimestamp(nextTimestamp)
+  }
+
+  function handlePlayheadPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    playheadDraggingRef.current = true
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setPlayheadTimestamp(timestampAtPointer(event))
+  }
+
+  function handlePlayheadPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!playheadDraggingRef.current) return
+    setPlayheadTimestamp(timestampAtPointer(event))
+  }
+
+  function handlePlayheadPointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!playheadDraggingRef.current) return
+    playheadDraggingRef.current = false
+    const timestamp = timestampAtPointer(event)
+    setPlayheadTimestamp(timestamp, true)
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  function handlePlayheadKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const step = event.shiftKey ? 30_000 : 5_000
+    let nextTimestamp: number | undefined
+    if (event.key === 'ArrowLeft') nextTimestamp = playingTimestamp - step
+    if (event.key === 'ArrowRight') nextTimestamp = playingTimestamp + step
+    if (event.key === 'Home') nextTimestamp = timelineStart
+    if (event.key === 'End') nextTimestamp = timelineEnd
+    if (nextTimestamp === undefined) return
+    event.preventDefault()
+    setPlayheadTimestamp(nextTimestamp, true)
+  }
+
+  function updateViewedPosition() {
+    const list = subtitleListRef.current
+    if (!list || lines.length === 0) return
+    const anchor = list.scrollTop + Math.min(36, list.clientHeight * 0.15)
+    const elements = Array.from(list.querySelectorAll<HTMLElement>('[data-line-index]'))
+    if (elements.length === 0) return
+    const nearestElement = elements.reduce((nearest, element) => (
+      Math.abs(element.offsetTop - list.offsetTop - anchor) < Math.abs(nearest.offsetTop - list.offsetTop - anchor)
+        ? element
+        : nearest
+    ), elements[0])
+    const nextViewedTimestamp = Number(nearestElement?.dataset.startMs)
+    if (Number.isFinite(nextViewedTimestamp)) setViewedTimestamp(nextViewedTimestamp)
+  }
+
+  function stopFollowingForBrowse() {
+    if (scrollAnimationRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationRef.current)
+      scrollAnimationRef.current = null
+    }
+    setFollowCurrent(false)
   }
 
   function lookupSourceLine(lookup: SavedLookup) {
@@ -1672,21 +1821,45 @@ function App() {
                     </nav>
                   ) : null}
 
-                  <label className="timeline-control">
-                    <span>
+                  <div className="timeline-control">
+                    <span className="timeline-labels">
                       <strong>Timeline</strong>
-                      <output>{formatTime(virtualTime(tracker, tick))} / {formatTime(timelineEnd)}</output>
+                      <span>
+                        <output className="playing-time"><i aria-hidden="true" />Playing {formatTime(playingTimestamp)}</output>
+                        <output className="viewing-time"><i aria-hidden="true" />Viewing {formatTime(viewedTimestamp)}</output>
+                      </span>
                     </span>
-                    <input
-                      type="range"
-                      min={lines[0]?.startMs ?? 0}
-                      max={timelineEnd}
-                      step="100"
-                      value={Math.min(timelineEnd, Math.max(lines[0]?.startMs ?? 0, virtualTime(tracker, tick)))}
-                      onChange={(event) => scrubTo(Number(event.target.value))}
-                      aria-label="Subtitle timeline"
-                    />
-                  </label>
+                    <div className="timeline-track-wrap">
+                      <button
+                        className="timeline-track"
+                        type="button"
+                        onPointerDown={handleTimelineBrowse}
+                        onKeyDown={handleTimelineBrowseKey}
+                        aria-label={`Browse subtitle timeline. Viewing ${formatTime(viewedTimestamp)}`}
+                      >
+                        <span className="timeline-progress" style={{ width: `${playingPosition}%` }} aria-hidden="true" />
+                        <span className="timeline-view-marker" style={{ left: `${viewedPosition}%` }} aria-hidden="true" />
+                      </button>
+                      <button
+                        className="timeline-playhead"
+                        type="button"
+                        style={{ left: `${playingPosition}%` }}
+                        role="slider"
+                        aria-label="Playing position"
+                        aria-valuemin={timelineStart}
+                        aria-valuemax={timelineEnd}
+                        aria-valuenow={Math.round(playingTimestamp)}
+                        aria-valuetext={formatTime(playingTimestamp)}
+                        onPointerDown={handlePlayheadPointerDown}
+                        onPointerMove={handlePlayheadPointerMove}
+                        onPointerUp={handlePlayheadPointerUp}
+                        onPointerCancel={() => { playheadDraggingRef.current = false }}
+                        onKeyDown={handlePlayheadKey}
+                      >
+                        <span aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="controls">
@@ -1716,6 +1889,9 @@ function App() {
                     '--subtitle-font-size': `${readerSettings.subtitleFontSize}px`,
                     '--furigana-opacity': readerSettings.furiganaOpacity / 100,
                   } as CSSProperties}
+                  onScroll={updateViewedPosition}
+                  onPointerDown={stopFollowingForBrowse}
+                  onWheel={stopFollowingForBrowse}
                 >
                   {tokenizedLines.map(({ line, tokens }) => {
                     const isCurrent = line.id === current?.id
@@ -1728,6 +1904,8 @@ function App() {
                         ].filter(Boolean).join(' ')}
                         key={line.id}
                         ref={isCurrent ? liveRef : undefined}
+                        data-line-index={line.index}
+                        data-start-ms={line.startMs}
                       >
                         <div className="line-meta">
                           <button className="time" type="button" onClick={() => reanchor(line)} aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}>
