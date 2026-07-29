@@ -58,8 +58,14 @@ type SavedLookup = {
 
 const savedLookupsKey = 'subtitle-companion:saved-lookups:v1'
 const subtitleFontSizeKey = 'subtitle-companion:subtitle-font-size:v1'
+const readerSettingsKey = 'subtitle-companion:reader-settings:v1'
 
 type ExportFormat = 'tsv' | 'csv' | 'txt'
+type ReaderSettings = {
+  furigana: boolean
+  furiganaOpacity: number
+  subtitleFontSize: number
+}
 
 const seedDictionary: DictionaryEntry[] = [
   { surface: '私', reading: 'わたし', meaning: 'I; me' },
@@ -343,9 +349,40 @@ function buildPlainText(lookups: SavedLookup[]) {
   ].join('\n')).join('\n\n')
 }
 
-function loadSubtitleFontSize() {
-  const saved = Number(localStorage.getItem(subtitleFontSizeKey))
-  return [18, 22, 26, 30].includes(saved) ? saved : 22
+function loadReaderSettings(): ReaderSettings {
+  const defaults: ReaderSettings = {
+    furigana: true,
+    furiganaOpacity: 100,
+    subtitleFontSize: 22,
+  }
+
+  try {
+    const parsed = JSON.parse(localStorage.getItem(readerSettingsKey) ?? '{}') as Partial<ReaderSettings>
+    const legacyFontSize = Number(localStorage.getItem(subtitleFontSizeKey))
+    return {
+      furigana: typeof parsed.furigana === 'boolean' ? parsed.furigana : defaults.furigana,
+      furiganaOpacity: [40, 60, 80, 100].includes(Number(parsed.furiganaOpacity)) ? Number(parsed.furiganaOpacity) : defaults.furiganaOpacity,
+      subtitleFontSize: [18, 22, 26, 30].includes(Number(parsed.subtitleFontSize))
+        ? Number(parsed.subtitleFontSize)
+        : [18, 22, 26, 30].includes(legacyFontSize) ? legacyFontSize : defaults.subtitleFontSize,
+    }
+  } catch {
+    return defaults
+  }
+}
+
+function animeStateId(entry: AnimeCatalogEntry) {
+  return new URL(entry.url).pathname.replace(/^\/+/, '')
+}
+
+function updateAnimeUrl(entry: AnimeCatalogEntry | null) {
+  const nextUrl = new URL(window.location.href)
+  if (entry) {
+    nextUrl.searchParams.set('anime', animeStateId(entry))
+  } else {
+    nextUrl.searchParams.delete('anime')
+  }
+  window.history.replaceState({}, '', nextUrl)
 }
 
 function App() {
@@ -356,7 +393,7 @@ function App() {
   const [tracker, setTracker] = useState<Tracker>({ status: 'idle', anchorSubtitleMs: 0, anchorClockMs: performance.now() })
   const [tick, setTick] = useState(performance.now())
   const [selectedToken, setSelectedToken] = useState<Token | null>(null)
-  const [furigana, setFurigana] = useState(true)
+  const [readerSettings, setReaderSettings] = useState(loadReaderSettings)
   const [dictionaryBuckets, setDictionaryBuckets] = useState<DictionaryBuckets>(seedBuckets)
   const [dictionaryStatus, setDictionaryStatus] = useState('Loading full JMdict...')
   const [tokenizer, setTokenizer] = useState<Tokenizer<IpadicFeatures> | null>(null)
@@ -369,7 +406,7 @@ function App() {
   const [subtitleFiles, setSubtitleFiles] = useState<SubtitleFile[]>([])
   const [filesStatus, setFilesStatus] = useState('')
   const [loadingFileUrl, setLoadingFileUrl] = useState('')
-  const [subtitleFontSize, setSubtitleFontSize] = useState(loadSubtitleFontSize)
+  const [shareStatus, setShareStatus] = useState('')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('tsv')
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const liveRef = useRef<HTMLLIElement | null>(null)
@@ -419,8 +456,8 @@ function App() {
   }, [savedLookups])
 
   useEffect(() => {
-    localStorage.setItem(subtitleFontSizeKey, String(subtitleFontSize))
-  }, [subtitleFontSize])
+    localStorage.setItem(readerSettingsKey, JSON.stringify(readerSettings))
+  }, [readerSettings])
 
   useEffect(() => {
     let cancelled = false
@@ -430,6 +467,16 @@ function App() {
         if (cancelled) return
         setAnimeCatalog(entries)
         setCatalogStatus(`${entries.length.toLocaleString()} anime titles ready`)
+        const requestedAnime = new URLSearchParams(window.location.search).get('anime')
+        const sharedEntry = entries.find((entry) => animeStateId(entry) === requestedAnime)
+        if (sharedEntry) {
+          setSubtitleFiles([])
+          setFilesStatus('Loading available subtitle files…')
+          setError('')
+          setShareStatus('')
+          setSelectedAnime(sharedEntry)
+          setAnimeQuery(sharedEntry.title)
+        }
       })
       .catch(() => {
         if (cancelled) return
@@ -440,6 +487,27 @@ function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!selectedAnime) return
+    let cancelled = false
+
+    void listAjattSubtitleFiles(selectedAnime)
+      .then((files) => {
+        if (cancelled) return
+        setSubtitleFiles(files)
+        setFilesStatus(`${files.length} subtitle ${files.length === 1 ? 'file' : 'files'}`)
+      })
+      .catch((caught: unknown) => {
+        if (cancelled) return
+        setFilesStatus('')
+        setError(caught instanceof Error ? caught.message : 'Could not load subtitles for this title.')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedAnime])
 
   useEffect(() => {
     let cancelled = false
@@ -495,20 +563,42 @@ function App() {
     }
   }
 
-  async function handleAnimeSelect(entry: AnimeCatalogEntry) {
-    setSelectedAnime(entry)
-    setAnimeQuery(entry.title)
+  function handleAnimeSelect(entry: AnimeCatalogEntry) {
     setSubtitleFiles([])
     setFilesStatus('Loading available subtitle files…')
     setError('')
+    setShareStatus('')
+    setSelectedAnime(entry)
+    setAnimeQuery(entry.title)
+    updateAnimeUrl(entry)
+  }
+
+  async function shareSelectedAnime() {
+    if (!selectedAnime) return
+    const shareUrl = new URL(window.location.href)
+    shareUrl.searchParams.set('anime', animeStateId(selectedAnime))
+    const shareData = {
+      title: `${selectedAnime.title} Japanese subtitles`,
+      text: `Open Japanese subtitles for ${selectedAnime.title}`,
+      url: shareUrl.href,
+    }
 
     try {
-      const files = await listAjattSubtitleFiles(entry)
-      setSubtitleFiles(files)
-      setFilesStatus(`${files.length} subtitle ${files.length === 1 ? 'file' : 'files'}`)
+      if (navigator.share) {
+        await navigator.share(shareData)
+        setShareStatus('Shared')
+      } else {
+        await navigator.clipboard.writeText(shareUrl.href)
+        setShareStatus('Link copied')
+      }
     } catch (caught) {
-      setFilesStatus('')
-      setError(caught instanceof Error ? caught.message : 'Could not load subtitles for this title.')
+      if (caught instanceof DOMException && caught.name === 'AbortError') return
+      try {
+        await navigator.clipboard.writeText(shareUrl.href)
+        setShareStatus('Link copied')
+      } catch {
+        setShareStatus('Copy the URL from your browser')
+      }
     }
   }
 
@@ -669,6 +759,8 @@ function App() {
                         setSelectedAnime(null)
                         setSubtitleFiles([])
                         setFilesStatus('')
+                        setShareStatus('')
+                        updateAnimeUrl(null)
                       }}
                       aria-controls="anime-suggestions"
                       aria-autocomplete="list"
@@ -680,7 +772,7 @@ function App() {
                     <ul className="anime-suggestions" id="anime-suggestions" role="listbox">
                       {animeResults.map((entry) => (
                         <li key={entry.url}>
-                          <button type="button" role="option" onClick={() => void handleAnimeSelect(entry)}>
+                          <button type="button" role="option" onClick={() => handleAnimeSelect(entry)}>
                             <span>
                               <strong>{entry.title}</strong>
                               {entry.englishName && entry.englishName !== entry.title ? <small>{entry.englishName}</small> : null}
@@ -701,12 +793,18 @@ function App() {
                           <strong>{selectedAnime.title}</strong>
                           <small>{filesStatus}</small>
                         </div>
-                        <button className="text-button" type="button" onClick={() => {
-                          setAnimeQuery('')
-                          setSelectedAnime(null)
-                          setSubtitleFiles([])
-                        }}>Change</button>
+                        <div className="anime-result-actions">
+                          <button className="text-button" type="button" onClick={() => void shareSelectedAnime()}>Share</button>
+                          <button className="text-button" type="button" onClick={() => {
+                            setAnimeQuery('')
+                            setSelectedAnime(null)
+                            setSubtitleFiles([])
+                            setShareStatus('')
+                            updateAnimeUrl(null)
+                          }}>Change</button>
+                        </div>
                       </header>
+                      {shareStatus ? <p className="share-status" aria-live="polite">{shareStatus}</p> : null}
                       {subtitleFiles.length > 0 ? (
                         <ol className="subtitle-files">
                           {subtitleFiles.map((file) => (
@@ -770,17 +868,35 @@ function App() {
                     <p>{lines.length} subtitle lines</p>
                   </div>
                   <div className="reader-settings">
-                    <label className="font-size-control">
+                    <label className="reader-setting-control">
                       Text
-                      <select value={subtitleFontSize} onChange={(event) => setSubtitleFontSize(Number(event.target.value))}>
+                      <select value={readerSettings.subtitleFontSize} onChange={(event) => setReaderSettings((currentSettings) => ({
+                        ...currentSettings,
+                        subtitleFontSize: Number(event.target.value),
+                      }))}>
                         <option value="18">Small</option>
                         <option value="22">Medium</option>
                         <option value="26">Large</option>
                         <option value="30">Extra large</option>
                       </select>
                     </label>
-                    <button className="secondary" type="button" onClick={() => setFurigana((value) => !value)}>
-                      Furigana {furigana ? 'on' : 'off'}
+                    <label className="reader-setting-control">
+                      Furigana opacity
+                      <select value={readerSettings.furiganaOpacity} onChange={(event) => setReaderSettings((currentSettings) => ({
+                        ...currentSettings,
+                        furiganaOpacity: Number(event.target.value),
+                      }))}>
+                        <option value="40">40%</option>
+                        <option value="60">60%</option>
+                        <option value="80">80%</option>
+                        <option value="100">100%</option>
+                      </select>
+                    </label>
+                    <button className="secondary" type="button" onClick={() => setReaderSettings((currentSettings) => ({
+                      ...currentSettings,
+                      furigana: !currentSettings.furigana,
+                    }))}>
+                      Furigana {readerSettings.furigana ? 'on' : 'off'}
                     </button>
                   </div>
                 </header>
@@ -791,7 +907,13 @@ function App() {
                   <span className="clock"><i className={tracker.status === 'running' ? 'is-live' : ''} aria-hidden="true" />{formatTime(virtualTime(tracker, tick))}</span>
                 </div>
 
-                <ol className="subtitle-list" style={{ '--subtitle-font-size': `${subtitleFontSize}px` } as CSSProperties}>
+                <ol
+                  className="subtitle-list"
+                  style={{
+                    '--subtitle-font-size': `${readerSettings.subtitleFontSize}px`,
+                    '--furigana-opacity': readerSettings.furiganaOpacity / 100,
+                  } as CSSProperties}
+                >
                   {tokenizedLines.map(({ line, tokens }) => {
                     const isCurrent = line.id === current?.id
                     return (
@@ -803,7 +925,7 @@ function App() {
                           {tokens.map((token) => (
                             token.surface.trim() === '' ? <span key={token.id}>{token.surface}</span> :
                             <button className="token" key={token.id} type="button" onClick={() => handleTokenSelect(token, line)}>
-                              {furigana && token.hasKanji && token.reading ? (
+                              {readerSettings.furigana && token.hasKanji && token.reading ? (
                                 <ruby>{token.surface}<rt>{token.reading}</rt></ruby>
                               ) : token.surface}
                             </button>

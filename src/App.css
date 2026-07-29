@@ -384,6 +384,21 @@ button:active,
   display: block;
 }
 
+.anime-result-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.share-status {
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 14px;
+  color: var(--accent);
+  font-size: 0.68rem;
+}
+
 .subtitle-results > header strong {
   color: var(--ink);
   font-size: 0.86rem;
@@ -837,7 +852,7 @@ button:disabled {
   gap: 8px;
 }
 
-.font-size-control {
+.reader-setting-control {
   display: inline-flex;
   min-height: 44px;
   align-items: center;
@@ -849,7 +864,7 @@ button:disabled {
   font-weight: 700;
 }
 
-.font-size-control select {
+.reader-setting-control select {
   align-self: stretch;
   border-width: 0 0 0 1px;
   padding: 0 8px;
@@ -957,6 +972,7 @@ rt {
   font-family: "Hiragino Sans", "Yu Gothic", sans-serif;
   font-size: 0.42em;
   font-weight: 700;
+  opacity: var(--furigana-opacity, 1);
 }
 
 .lookup {
@@ -1142,14 +1158,16 @@ rt {
   }
 
   .reader-settings {
+    display: grid;
     width: 100%;
+    grid-template-columns: 1fr 1fr;
   }
 
-  .reader-settings > * {
-    flex: 1;
+  .reader-settings > button {
+    grid-column: 1 / -1;
   }
 
-  .font-size-control select {
+  .reader-setting-control select {
     flex: 1;
   }
 
