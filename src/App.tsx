@@ -740,6 +740,10 @@ function App() {
 
   const current = currentSubtitle(lines, tracker, tick)
   const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets, tokenizer) })), [dictionaryBuckets, lines, tokenizer])
+  const currentTokenizedLine = useMemo(
+    () => current ? tokenizedLines.find(({ line }) => line.id === current.id) : undefined,
+    [current, tokenizedLines],
+  )
   const animeResults = useMemo(() => searchAnimeCatalog(animeCatalog, animeQuery), [animeCatalog, animeQuery])
   const subtitleSearchResults = useMemo(() => {
     const query = subtitleQuery.normalize('NFKC').trim().toLowerCase()
@@ -2026,10 +2030,25 @@ function App() {
                     ) : null}
                   </div>
 
-                  <button className="current-subtitle-preview" type="button" onClick={jumpToCurrent}>
-                    <span><i aria-hidden="true" />Current subtitle</span>
-                    <strong>{current?.plainText || 'Waiting for the first subtitle…'}</strong>
-                  </button>
+                  <div className="current-subtitle-preview">
+                    <div className="current-preview-header">
+                      <span><i aria-hidden="true" />Current subtitle</span>
+                      <button className="current-preview-sync" type="button" onClick={jumpToCurrent} aria-label="Sync transcript to current subtitle">
+                        <AutoScrollIcon />
+                        <span>Sync</span>
+                      </button>
+                    </div>
+                    <p className="current-preview-text">
+                      {current && currentTokenizedLine ? currentTokenizedLine.tokens.map((token) => (
+                        !/[\p{Letter}\p{Number}]/u.test(token.surface) ? <span key={token.id}>{token.surface}</span> :
+                        <button className="current-preview-token" key={token.id} type="button" onClick={() => handleTokenSelect(token, current)}>
+                          {readerSettings.furigana && token.hasKanji && token.reading ? (
+                            <ruby>{token.surface}<rt>{token.reading}</rt></ruby>
+                          ) : token.surface}
+                        </button>
+                      )) : 'Waiting for the first subtitle…'}
+                    </p>
+                  </div>
 
                   <div className="timeline-control">
                     <span className="timeline-labels">

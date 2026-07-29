@@ -2225,7 +2225,6 @@ body.reader-focus-active {
     display: grid;
     min-height: 68px;
     gap: 4px;
-    border: 0;
     border-bottom: 1px solid var(--line);
     padding: 6px 2px 8px;
     color: var(--ink);
@@ -2233,15 +2232,14 @@ body.reader-focus-active {
     text-align: left;
   }
 
-  .reader.is-focused .current-subtitle-preview:hover,
-  .reader.is-focused .current-subtitle-preview:focus-visible,
-  .reader.is-focused .current-subtitle-preview:active {
-    border-color: var(--line);
-    color: var(--ink);
-    background: transparent;
+  .current-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
   }
 
-  .current-subtitle-preview > span {
+  .current-preview-header > span {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -2251,22 +2249,59 @@ body.reader-focus-active {
     font-weight: 600;
   }
 
-  .current-subtitle-preview > span i {
+  .current-preview-header > span i {
     width: 7px;
     height: 7px;
     border-radius: 50%;
     background: var(--accent);
   }
 
-  .current-subtitle-preview strong {
-    display: -webkit-box;
-    overflow: hidden;
+  .current-preview-sync {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    border-color: transparent;
+    padding: 0 7px;
+    color: var(--accent);
+    background: transparent;
+    font-size: 0.6rem;
+  }
+
+  .current-preview-sync:hover,
+  .current-preview-sync:focus-visible {
+    border-color: transparent;
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .current-preview-text {
+    max-height: 3.2em;
+    margin: 0;
+    overflow-y: auto;
     font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
     font-size: var(--subtitle-font-size, 22px);
     line-height: 1.4;
-    text-overflow: ellipsis;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+  }
+
+  .current-preview-token {
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    border: 0;
+    padding: 0 2px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    font-weight: 600;
+  }
+
+  .current-preview-token:hover,
+  .current-preview-token:focus-visible {
+    color: var(--accent);
+    background: transparent;
   }
 
   .reader.is-focused .timeline-labels > strong {
