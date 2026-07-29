@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import kuromoji from 'kuromoji/build/kuromoji.js'
 import type { IpadicFeatures, Tokenizer } from 'kuromoji'
 import {
@@ -384,6 +384,15 @@ function formatTime(ms: number) {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
+function parseSeekTime(value: string) {
+  const parts = value.trim().split(':').map(Number)
+  if (parts.length < 1 || parts.length > 3 || parts.some((part) => !Number.isInteger(part) || part < 0)) return
+  if (parts.length === 1) return parts[0] * 1000
+  if (parts.at(-1)! >= 60 || (parts.length === 3 && parts[1] >= 60)) return
+  const [hours, minutes, seconds] = parts.length === 3 ? parts : [0, parts[0], parts[1]]
+  return ((hours * 60 + minutes) * 60 + seconds) * 1000
+}
+
 function makeLookupId(source: string, line: SubtitleLine, token: Token) {
   return [source, line.startMs, line.endMs, token.surface, line.plainText].join('|')
 }
@@ -635,6 +644,9 @@ function App() {
   const [subtitleQuery, setSubtitleQuery] = useState('')
   const [highlightedLineId, setHighlightedLineId] = useState('')
   const [viewedTimestamp, setViewedTimestamp] = useState(0)
+  const [seekTimeInput, setSeekTimeInput] = useState('0:00')
+  const [editingSeekTime, setEditingSeekTime] = useState(false)
+  const [seekTimeInvalid, setSeekTimeInvalid] = useState(false)
   const liveRef = useRef<HTMLLIElement | null>(null)
   const subtitleListRef = useRef<HTMLOListElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -1252,15 +1264,40 @@ function App() {
     scrollLineIntoView(nearestLine, focusMode ? 'start' : 'center')
   }
 
-  function timestampAtPointer(event: ReactPointerEvent<HTMLElement>) {
-    const bounds = event.currentTarget.parentElement?.getBoundingClientRect()
+  function commitSeekTime() {
+    const timestamp = parseSeekTime(seekTimeInput)
+    setEditingSeekTime(false)
+    if (timestamp === undefined) {
+      setSeekTimeInvalid(true)
+      setSeekTimeInput(formatTime(playingTimestamp))
+      return
+    }
+    setSeekTimeInvalid(false)
+    setPlayheadTimestamp(timestamp, true)
+  }
+
+  function handleSeekTimeKey(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.currentTarget.blur()
+    }
+    if (event.key === 'Escape') {
+      setSeekTimeInvalid(false)
+      setSeekTimeInput(formatTime(playingTimestamp))
+      setEditingSeekTime(false)
+      event.currentTarget.blur()
+    }
+  }
+
+  function timestampAtPosition(clientX: number, target: HTMLElement) {
+    const bounds = target.parentElement?.getBoundingClientRect()
     if (!bounds) return playingTimestamp
-    const progress = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width))
+    const progress = Math.min(1, Math.max(0, (clientX - bounds.left) / bounds.width))
     return timelineStart + progress * timelineDuration
   }
 
-  function handleTimelineBrowse(event: ReactPointerEvent<HTMLButtonElement>) {
-    browseToTimestamp(timestampAtPointer(event))
+  function handleTimelineBrowse(event: ReactMouseEvent<HTMLButtonElement>) {
+    browseToTimestamp(timestampAtPosition(event.clientX, event.currentTarget))
   }
 
   function handleTimelineBrowseKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
@@ -1280,18 +1317,18 @@ function App() {
     event.stopPropagation()
     playheadDraggingRef.current = true
     event.currentTarget.setPointerCapture(event.pointerId)
-    setPlayheadTimestamp(timestampAtPointer(event))
+    setPlayheadTimestamp(timestampAtPosition(event.clientX, event.currentTarget))
   }
 
   function handlePlayheadPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
     if (!playheadDraggingRef.current) return
-    setPlayheadTimestamp(timestampAtPointer(event))
+    setPlayheadTimestamp(timestampAtPosition(event.clientX, event.currentTarget))
   }
 
   function handlePlayheadPointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
     if (!playheadDraggingRef.current) return
     playheadDraggingRef.current = false
-    const timestamp = timestampAtPointer(event)
+    const timestamp = timestampAtPosition(event.clientX, event.currentTarget)
     setPlayheadTimestamp(timestamp, true)
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
@@ -1687,7 +1724,7 @@ function App() {
                   </div>
                   <div className="reader-actions">
                     <button className="secondary copy-link" type="button" onClick={() => void copyReaderLink()}>Copy link</button>
-                    <button className="secondary focus-toggle" type="button" onClick={() => {
+                    <button className="secondary focus-toggle" type="button" aria-label={focusMode ? 'Exit focus view' : undefined} onClick={() => {
                       setFocusMode((currentMode) => {
                         const nextMode = !currentMode
                         if (nextMode && readerPreferencesRef.current) readerPreferencesRef.current.open = false
@@ -1695,7 +1732,7 @@ function App() {
                       })
                       setFollowCurrent(true)
                     }}>
-                      {focusMode ? 'Exit focus' : 'Focus view'}
+                      {focusMode ? 'Exit' : 'Focus view'}
                     </button>
                   </div>
                 </header>
@@ -1821,11 +1858,36 @@ function App() {
                     </nav>
                   ) : null}
 
+                  <button className="current-subtitle-preview" type="button" onClick={jumpToCurrent}>
+                    <span><i aria-hidden="true" />Now playing <time>{formatTime(playingTimestamp)}</time></span>
+                    <strong>{current?.plainText || 'Waiting for the first subtitle…'}</strong>
+                  </button>
+
                   <div className="timeline-control">
                     <span className="timeline-labels">
                       <strong>Timeline</strong>
                       <span>
-                        <output className="playing-time"><i aria-hidden="true" />Playing {formatTime(playingTimestamp)}</output>
+                        <label className={seekTimeInvalid ? 'playing-time is-invalid' : 'playing-time'}>
+                          <i aria-hidden="true" />
+                          <span>Playing</span>
+                          <input
+                            type="text"
+                            inputMode="text"
+                            autoComplete="off"
+                            spellCheck="false"
+                            value={editingSeekTime ? seekTimeInput : formatTime(playingTimestamp)}
+                            aria-label="Playing time. Enter minutes and seconds"
+                            aria-invalid={seekTimeInvalid}
+                            onFocus={() => {
+                              setSeekTimeInput(formatTime(playingTimestamp))
+                              setEditingSeekTime(true)
+                              setSeekTimeInvalid(false)
+                            }}
+                            onChange={(event) => setSeekTimeInput(event.target.value)}
+                            onBlur={commitSeekTime}
+                            onKeyDown={handleSeekTimeKey}
+                          />
+                        </label>
                         <output className="viewing-time"><i aria-hidden="true" />Viewing {formatTime(viewedTimestamp)}</output>
                       </span>
                     </span>
@@ -1833,7 +1895,7 @@ function App() {
                       <button
                         className="timeline-track"
                         type="button"
-                        onPointerDown={handleTimelineBrowse}
+                        onClick={handleTimelineBrowse}
                         onKeyDown={handleTimelineBrowseKey}
                         aria-label={`Browse subtitle timeline. Viewing ${formatTime(viewedTimestamp)}`}
                       >

@@ -1255,6 +1255,10 @@ button:disabled {
   font-size: 0.68rem;
 }
 
+.current-subtitle-preview {
+  display: none;
+}
+
 .timeline-control {
   display: grid;
   grid-column: 1 / -1;
@@ -1282,7 +1286,8 @@ button:disabled {
   font-size: 0.68rem;
 }
 
-.timeline-control output {
+.timeline-control output,
+.timeline-control .playing-time {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1290,16 +1295,39 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.timeline-control output i {
+.timeline-control output i,
+.timeline-control .playing-time > i {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border: 2px solid var(--ink);
   border-radius: 50%;
 }
 
-.timeline-control .playing-time i {
+.timeline-control .playing-time > i {
   border-color: var(--accent);
   background: var(--accent);
+}
+
+.playing-time input {
+  width: 4.4em;
+  min-height: 32px;
+  border: 1px solid transparent;
+  padding: 2px 4px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.playing-time input:hover,
+.playing-time input:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.playing-time.is-invalid input {
+  border-color: var(--danger);
 }
 
 .timeline-track-wrap {
@@ -1317,6 +1345,13 @@ button:disabled {
   background: transparent;
   cursor: pointer;
   touch-action: manipulation;
+}
+
+.timeline-track:hover,
+.timeline-track:focus-visible,
+.timeline-track:active {
+  border-color: transparent;
+  background: transparent;
 }
 
 .timeline-track::before {
@@ -1500,7 +1535,7 @@ button:disabled {
 }
 
 .subtitle-line.jump-highlight {
-  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px rgba(242, 113, 88, 0.34);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .time {
@@ -1597,7 +1632,7 @@ body.reader-focus-active {
 }
 
 .reader.is-focused .subtitle-line.current {
-  background: #2c1b18;
+  background: transparent;
   box-shadow: inset 4px 0 0 var(--accent);
 }
 
@@ -1911,9 +1946,15 @@ body.reader-focus-active {
   }
 
   .reader.is-focused .reader-bar {
-    min-height: calc(48px + env(safe-area-inset-top));
-    justify-content: flex-end;
-    padding: max(4px, env(safe-area-inset-top)) 8px 4px;
+    position: absolute;
+    top: max(8px, env(safe-area-inset-top));
+    right: 8px;
+    z-index: 4;
+    width: auto;
+    min-height: 0;
+    border: 0;
+    padding: 0;
+    background: transparent;
   }
 
   .reader.is-focused .reader-actions {
@@ -1921,13 +1962,66 @@ body.reader-focus-active {
   }
 
   .reader.is-focused .reader-actions button {
-    min-height: 40px;
+    min-height: 36px;
+    padding-inline: 10px;
+    background: rgba(17, 20, 17, 0.92);
+    font-size: 0.64rem;
   }
 
   .reader.is-focused .reader-tools {
+    order: 2;
     gap: 0;
-    padding: 2px 10px;
+    border-top: 1px solid var(--line);
+    padding: 4px 10px 2px;
     background: var(--paper);
+  }
+
+  .reader.is-focused .current-subtitle-preview {
+    display: grid;
+    min-height: 52px;
+    gap: 4px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 6px 2px 8px;
+    color: var(--ink);
+    background: transparent;
+    text-align: left;
+  }
+
+  .reader.is-focused .current-subtitle-preview:hover,
+  .reader.is-focused .current-subtitle-preview:focus-visible,
+  .reader.is-focused .current-subtitle-preview:active {
+    border-color: var(--line);
+    color: var(--ink);
+    background: transparent;
+  }
+
+  .current-subtitle-preview > span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.6rem;
+    font-weight: 600;
+  }
+
+  .current-subtitle-preview > span i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .current-subtitle-preview strong {
+    display: -webkit-box;
+    overflow: hidden;
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    text-overflow: ellipsis;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .reader.is-focused .timeline-labels > strong {
@@ -1944,8 +2038,11 @@ body.reader-focus-active {
   }
 
   .reader.is-focused .controls {
+    order: 3;
     min-height: 48px;
-    padding-inline: 8px;
+    flex: 0 0 auto;
+    padding: 4px 8px max(4px, env(safe-area-inset-bottom));
+    background: var(--paper);
   }
 
   .reader.is-focused .controls button {
@@ -1958,6 +2055,12 @@ body.reader-focus-active {
 
   .reader.is-focused .subtitle-line {
     padding-block: 16px;
+  }
+
+  .reader.is-focused .subtitle-list {
+    order: 1;
+    padding-top: calc(44px + env(safe-area-inset-top));
+    padding-bottom: 0;
   }
 
   .saved-actions {
@@ -1977,7 +2080,8 @@ body.reader-focus-active {
   }
 
   .reader-focus-active .lookup {
-    max-height: min(38dvh, 340px);
+    bottom: calc(168px + env(safe-area-inset-bottom));
+    max-height: min(34dvh, 300px);
     padding: 14px;
   }
 
