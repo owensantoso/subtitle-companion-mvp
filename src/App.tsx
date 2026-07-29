@@ -632,6 +632,30 @@ function AutoScrollIcon() {
   )
 }
 
+function LinkIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19">
+      <path d="m9.5 14.5-1.25 1.25a3.18 3.18 0 0 1-4.5-4.5l3-3a3.18 3.18 0 0 1 4.5 0M14.5 9.5l1.25-1.25a3.18 3.18 0 0 1 4.5 4.5l-3 3a3.18 3.18 0 0 1-4.5 0M8.5 15.5l7-7" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+function ExpandIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19">
+      <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5M4 4l6 6M20 4l-6 6M4 20l6-6M20 20l-6-6" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+function CollapseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19">
+      <path d="m4 4 6 6m0-5v5H5M20 4l-6 6m5 0h-5V5M4 20l6-6m0 5v-5H5M20 20l-6-6m5 0h-5v5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
 function App() {
   const [sourceName, setSourceName] = useState('')
   const [url, setUrl] = useState('')
@@ -1747,8 +1771,10 @@ function App() {
                     <p>{lines.length} subtitle lines</p>
                   </div>
                   <div className="reader-actions">
-                    <button className="secondary copy-link" type="button" onClick={() => void copyReaderLink()}>Copy link</button>
-                    <button className="secondary focus-toggle" type="button" aria-label={focusMode ? 'Exit focus view' : undefined} onClick={() => {
+                    <button className="secondary icon-button copy-link" type="button" aria-label="Copy subtitle link" title="Copy link" onClick={() => void copyReaderLink()}>
+                      <LinkIcon />
+                    </button>
+                    <button className="secondary icon-button focus-toggle" type="button" aria-label={focusMode ? 'Exit focus view' : 'Enter focus view'} title={focusMode ? 'Exit focus' : 'Focus view'} onClick={() => {
                       setFocusMode((currentMode) => {
                         const nextMode = !currentMode
                         if (nextMode && readerPreferencesRef.current) readerPreferencesRef.current.open = false
@@ -1756,10 +1782,34 @@ function App() {
                       })
                       setFollowCurrent(true)
                     }}>
-                      {focusMode ? 'Exit' : 'Focus view'}
+                      {focusMode ? <CollapseIcon /> : <ExpandIcon />}
                     </button>
                   </div>
                 </header>
+                {activeSubtitleFile ? (
+                  <nav className="episode-navigation reader-episode-navigation" aria-label="Episode subtitles">
+                    <button
+                      className="secondary"
+                      type="button"
+                      aria-label="Previous episode subtitles"
+                      disabled={!previousEpisodeFile || Boolean(loadingFileUrl)}
+                      title={previousEpisodeFile?.name}
+                      onClick={() => previousEpisodeFile && void handleAjattFile(previousEpisodeFile)}
+                    >
+                      ← Prev
+                    </button>
+                    <button
+                      className="secondary"
+                      type="button"
+                      aria-label="Next episode subtitles"
+                      disabled={!nextEpisodeFile || Boolean(loadingFileUrl)}
+                      title={nextEpisodeFile?.name}
+                      onClick={() => nextEpisodeFile && void handleAjattFile(nextEpisodeFile)}
+                    >
+                      Next →
+                    </button>
+                  </nav>
+                ) : null}
                 {shareStatus ? <p className="reader-share-status" aria-live="polite">{shareStatus}</p> : null}
 
                 <details ref={readerPreferencesRef} className="reader-preferences">
@@ -1858,29 +1908,6 @@ function App() {
                       </div>
                     ) : null}
                   </div>
-
-                  {activeSubtitleFile ? (
-                    <nav className="episode-navigation" aria-label="Episode subtitles">
-                      <button
-                        className="secondary"
-                        type="button"
-                        disabled={!previousEpisodeFile || Boolean(loadingFileUrl)}
-                        title={previousEpisodeFile?.name}
-                        onClick={() => previousEpisodeFile && void handleAjattFile(previousEpisodeFile)}
-                      >
-                        Previous episode
-                      </button>
-                      <button
-                        className="secondary"
-                        type="button"
-                        disabled={!nextEpisodeFile || Boolean(loadingFileUrl)}
-                        title={nextEpisodeFile?.name}
-                        onClick={() => nextEpisodeFile && void handleAjattFile(nextEpisodeFile)}
-                      >
-                        Next episode
-                      </button>
-                    </nav>
-                  ) : null}
 
                   <button className="current-subtitle-preview" type="button" onClick={jumpToCurrent}>
                     <span><i aria-hidden="true" />Current subtitle</span>
