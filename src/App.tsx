@@ -101,6 +101,8 @@ type ReaderSettings = {
   subtitleFontSize: number
   dimInactive: boolean
   density: SubtitleDensity
+  autoResumeFollow: boolean
+  autoResumeDelayMs: number
 }
 
 const seedDictionary: DictionaryEntry[] = [
@@ -467,6 +469,8 @@ function loadReaderSettings(): ReaderSettings {
     subtitleFontSize: 22,
     dimInactive: true,
     density: 'compact',
+    autoResumeFollow: true,
+    autoResumeDelayMs: 3000,
   }
 
   try {
@@ -488,6 +492,10 @@ function loadReaderSettings(): ReaderSettings {
         : [18, 22, 26, 30].includes(legacyFontSize) ? legacyFontSize : defaults.subtitleFontSize,
       dimInactive: typeof parsed.dimInactive === 'boolean' ? parsed.dimInactive : defaults.dimInactive,
       density: parsed.density === 'comfortable' || parsed.density === 'compact' ? parsed.density : defaults.density,
+      autoResumeFollow: typeof parsed.autoResumeFollow === 'boolean' ? parsed.autoResumeFollow : defaults.autoResumeFollow,
+      autoResumeDelayMs: Number.isFinite(Number(parsed.autoResumeDelayMs))
+        ? Math.min(30_000, Math.max(500, Number(parsed.autoResumeDelayMs)))
+        : defaults.autoResumeDelayMs,
     }
   } catch {
     return defaults
@@ -733,8 +741,10 @@ function App() {
   const suggestionRefs = useRef<(HTMLButtonElement | null)[]>([])
   const deepLinkFileHandledRef = useRef(false)
   const scrollAnimationRef = useRef<number | null>(null)
+  const autoResumeTimerRef = useRef<number | null>(null)
   const playheadDraggingRef = useRef(false)
   const playingTimestampRef = useRef(0)
+  const followCurrentRef = useRef(true)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
   const pendingLineRef = useRef<number | null>(Number.isFinite(linkedLine) && linkedLine >= 0 ? linkedLine : null)
 
@@ -766,6 +776,7 @@ function App() {
   const timelineEnd = lines.at(-1)?.endMs ?? 0
   const playingTimestamp = Math.min(timelineEnd, Math.max(timelineStart, virtualTime(tracker, tick)))
   playingTimestampRef.current = playingTimestamp
+  followCurrentRef.current = followCurrent
   const timelineDuration = Math.max(1, timelineEnd - timelineStart)
   const playingPosition = ((playingTimestamp - timelineStart) / timelineDuration) * 100
   const viewedPosition = ((Math.min(timelineEnd, Math.max(timelineStart, viewedTimestamp)) - timelineStart) / timelineDuration) * 100
@@ -818,7 +829,7 @@ function App() {
       if (event.key === 'Escape') setFocusMode(false)
     }
     const handleResize = () => {
-      if (followCurrent) window.requestAnimationFrame(() => scrollCurrentLine('center', false))
+      if (followCurrentRef.current) window.requestAnimationFrame(() => scrollCurrentLine('center', false))
     }
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('resize', handleResize)
@@ -832,7 +843,7 @@ function App() {
     }
     // The scroll helper intentionally resolves the current DOM refs when invoked.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusMode, followCurrent])
+  }, [focusMode])
 
   useEffect(() => {
     let cancelled = false
@@ -870,6 +881,18 @@ function App() {
   useEffect(() => {
     localStorage.setItem(readerSettingsKey, JSON.stringify(readerSettings))
   }, [readerSettings])
+
+  useEffect(() => {
+    if (!readerSettings.autoResumeFollow && autoResumeTimerRef.current !== null) {
+      window.clearTimeout(autoResumeTimerRef.current)
+      autoResumeTimerRef.current = null
+    }
+  }, [readerSettings.autoResumeFollow])
+
+  useEffect(() => () => {
+    if (autoResumeTimerRef.current !== null) window.clearTimeout(autoResumeTimerRef.current)
+    if (scrollAnimationRef.current !== null) window.cancelAnimationFrame(scrollAnimationRef.current)
+  }, [])
 
   useEffect(() => {
     if (lines.length === 0) return
@@ -1068,15 +1091,14 @@ function App() {
 
     const boundedTop = Math.min(list.scrollHeight - list.clientHeight, Math.max(0, targetTop))
     const distance = boundedTop - list.scrollTop
-    const isLongJump = Math.abs(distance) > list.clientHeight * 3
-    if (!smooth || isLongJump || Math.abs(distance) < 2 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (!smooth || Math.abs(distance) < 2 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       list.scrollTop = boundedTop
       return
     }
 
     const startedAt = performance.now()
     const startTop = list.scrollTop
-    const duration = Math.min(260, Math.max(100, Math.abs(distance) / 14))
+    const duration = Math.min(340, Math.max(120, Math.abs(distance) / 14))
     const animate = (now: number) => {
       const progress = Math.min(1, (now - startedAt) / duration)
       const eased = 1 - (1 - progress) ** 3
@@ -1250,6 +1272,7 @@ function App() {
   }
 
   function jumpToCurrent() {
+    cancelAutoResume()
     setFollowCurrent(true)
     setViewedTimestamp(playingTimestamp)
     window.requestAnimationFrame(() => scrollCurrentLine('center'))
@@ -1397,6 +1420,7 @@ function App() {
     const nearestLine = nearestLineAt(timestamp)
     if (!nearestLine) return
     setFollowCurrent(false)
+    scheduleAutoResume()
     setViewedTimestamp(nearestLine.startMs)
     setHighlightedLineId(nearestLine.id)
     scrollLineIntoView(nearestLine, 'center')
@@ -1516,6 +1540,24 @@ function App() {
       scrollAnimationRef.current = null
     }
     setFollowCurrent(false)
+    scheduleAutoResume()
+  }
+
+  function cancelAutoResume() {
+    if (autoResumeTimerRef.current === null) return
+    window.clearTimeout(autoResumeTimerRef.current)
+    autoResumeTimerRef.current = null
+  }
+
+  function scheduleAutoResume() {
+    cancelAutoResume()
+    if (!readerSettings.autoResumeFollow) return
+    autoResumeTimerRef.current = window.setTimeout(() => {
+      autoResumeTimerRef.current = null
+      setViewedTimestamp(playingTimestampRef.current)
+      setFollowCurrent(true)
+      window.requestAnimationFrame(() => scrollCurrentLine('center'))
+    }, readerSettings.autoResumeDelayMs)
   }
 
   function lookupSourceLine(lookup: SavedLookup) {
@@ -1873,6 +1915,11 @@ function App() {
             {lines.length > 0 ? (
               <section
                 className={focusMode ? 'reader is-focused' : 'reader'}
+                style={{
+                  '--subtitle-font-size': `${readerSettings.subtitleFontSize}px`,
+                  '--transcript-font-size': `${Math.max(16, readerSettings.subtitleFontSize - 5)}px`,
+                  '--furigana-opacity': readerSettings.furiganaOpacity / 100,
+                } as CSSProperties}
                 role={focusMode ? 'dialog' : undefined}
                 aria-modal={focusMode ? true : undefined}
                 aria-labelledby="reader-title"
@@ -1986,6 +2033,36 @@ function App() {
                         <option value="compact">Compact</option>
                         <option value="comfortable">Comfortable</option>
                       </select>
+                    </label>
+                    <button className="secondary" type="button" aria-pressed={readerSettings.autoResumeFollow} onClick={() => setReaderSettings((currentSettings) => ({
+                      ...currentSettings,
+                      autoResumeFollow: !currentSettings.autoResumeFollow,
+                    }))}>
+                      Resume autoscroll {readerSettings.autoResumeFollow ? 'on' : 'off'}
+                    </button>
+                    <label className="reader-setting-control">
+                      Resume after
+                      <span className="number-setting">
+                        <input
+                          aria-label="Resume autoscroll delay in milliseconds"
+                          type="number"
+                          min="500"
+                          max="30000"
+                          step="500"
+                          inputMode="numeric"
+                          disabled={!readerSettings.autoResumeFollow}
+                          value={readerSettings.autoResumeDelayMs}
+                          onChange={(event) => {
+                            const nextDelay = event.target.valueAsNumber
+                            if (!Number.isFinite(nextDelay)) return
+                            setReaderSettings((currentSettings) => ({
+                              ...currentSettings,
+                              autoResumeDelayMs: Math.min(30_000, Math.max(500, nextDelay)),
+                            }))
+                          }}
+                        />
+                        <span aria-hidden="true">ms</span>
+                      </span>
                     </label>
                   </div>
                 </details>
@@ -2144,13 +2221,8 @@ function App() {
                     readerSettings.dimInactive ? 'dim-inactive' : '',
                     `density-${readerSettings.density}`,
                   ].filter(Boolean).join(' ')}
-                  style={{
-                    '--subtitle-font-size': `${readerSettings.subtitleFontSize}px`,
-                    '--transcript-font-size': `${Math.max(16, readerSettings.subtitleFontSize - 5)}px`,
-                    '--furigana-opacity': readerSettings.furiganaOpacity / 100,
-                  } as CSSProperties}
                   onScroll={updateViewedPosition}
-                  onPointerDown={stopFollowingForBrowse}
+                  onTouchMove={stopFollowingForBrowse}
                   onWheel={stopFollowingForBrowse}
                 >
                   {tokenizedLines.map(({ line, tokens }) => {

@@ -1645,11 +1645,11 @@ button:disabled {
 }
 
 .subtitle-list.density-compact .subtitle-line {
-  padding-block: 10px;
+  padding-block: 6px;
 }
 
 .subtitle-list.density-compact .line-text {
-  line-height: 1.55;
+  line-height: 1.4;
 }
 
 .subtitle-list.density-comfortable .subtitle-line {
@@ -1725,7 +1725,7 @@ button:disabled {
   min-height: 36px;
   margin: 0;
   border: 0;
-  padding: 1px 3px;
+  padding: 1px;
   color: inherit;
   background: transparent;
   font: inherit;
@@ -2278,20 +2278,20 @@ body.reader-focus-active {
   }
 
   .current-preview-text {
-    max-height: 3.2em;
     margin: 0;
-    overflow-y: auto;
     font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
     font-size: var(--subtitle-font-size, 22px);
-    line-height: 1.4;
+    line-height: 1.5;
+    letter-spacing: normal;
+    overflow-wrap: anywhere;
+    word-spacing: normal;
   }
 
   .current-preview-token {
-    min-width: 44px;
     min-height: 44px;
     margin: 0;
     border: 0;
-    padding: 0 2px;
+    padding: 0 1px;
     color: inherit;
     background: transparent;
     font: inherit;
@@ -2344,6 +2344,14 @@ body.reader-focus-active {
 
   .reader.is-focused .subtitle-line {
     padding-block: 16px;
+  }
+
+  .reader.is-focused .subtitle-list.density-compact .subtitle-line {
+    padding-block: 6px;
+  }
+
+  .reader.is-focused .subtitle-list.density-compact .line-text {
+    line-height: 1.4;
   }
 
   .reader.is-focused .line-text {
