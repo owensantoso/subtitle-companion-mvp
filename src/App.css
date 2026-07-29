@@ -1,6 +1,7 @@
 .app-shell {
   min-height: 100vh;
   min-height: 100dvh;
+  overflow-x: clip;
 }
 
 .brand,
@@ -24,6 +25,10 @@ button:active,
   border-bottom: 1px solid var(--line);
   padding: 12px max(24px, calc((100vw - 1180px) / 2));
   background: rgba(16, 18, 16, 0.96);
+}
+
+.mobile-tabbar {
+  display: none;
 }
 
 .brand {
@@ -140,12 +145,19 @@ button:active,
   grid-template-columns: minmax(0, 1fr) 340px;
   gap: 20px;
   align-items: start;
+  min-width: 0;
 }
 
 .main-column {
   display: grid;
   gap: 20px;
   min-width: 0;
+}
+
+.import-body,
+.anime-search {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .workspace-loaded .reader {
@@ -155,6 +167,8 @@ button:active,
 .import-card,
 .reader,
 .saved-lookups {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--line);
   background: var(--surface);
 }
@@ -168,6 +182,10 @@ button:active,
   align-items: flex-start;
   gap: 16px;
   margin-bottom: 24px;
+}
+
+.section-heading > div {
+  min-width: 0;
 }
 
 .import-card > summary {
@@ -252,6 +270,7 @@ button:active,
 
 .search-field {
   position: relative;
+  min-width: 0;
 }
 
 .search-field > span {
@@ -269,8 +288,38 @@ button:active,
 
 .search-field input[type="search"] {
   min-height: 52px;
+  min-width: 0;
+  padding-right: 50px;
   padding-left: 50px;
   font-size: 1rem;
+}
+
+input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+}
+
+.search-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: grid;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  place-items: center;
+  border-color: transparent;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  transform: translateY(-50%);
+}
+
+.search-clear:hover,
+.search-clear:focus-visible {
+  border-color: transparent;
+  color: var(--accent);
+  background: transparent;
 }
 
 .catalog-status {
@@ -289,8 +338,16 @@ button:active,
 }
 
 .anime-suggestions {
+  width: 100%;
   max-height: 360px;
+  overflow-x: hidden;
   overflow-y: auto;
+}
+
+.anime-suggestions li,
+.anime-suggestions button {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .anime-suggestions li + li,
@@ -332,7 +389,9 @@ button:active,
 }
 
 .anime-suggestions button span {
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 
 .anime-suggestions button strong {
@@ -672,10 +731,19 @@ button:disabled {
   display: none;
 }
 
+.recent-search-item {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
 .recent-search {
   display: grid;
-  flex: 0 0 auto;
+  flex: 0 1 220px;
   min-height: 48px;
+  min-width: 0;
   max-width: 220px;
   justify-items: start;
   gap: 2px;
@@ -707,9 +775,17 @@ button:disabled {
   list-style: none;
 }
 
-.recent-subtitles button {
+.recent-subtitle-item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 8px;
+}
+
+.recent-subtitles .recent-subtitle-open {
   display: flex;
   width: 100%;
+  min-width: 0;
   min-height: 54px;
   align-items: center;
   justify-content: space-between;
@@ -721,7 +797,7 @@ button:disabled {
   text-align: left;
 }
 
-.recent-subtitles button > span {
+.recent-subtitles .recent-subtitle-open > span {
   display: grid;
   min-width: 0;
   gap: 3px;
@@ -747,6 +823,26 @@ button:disabled {
 
 .recent-subtitles em {
   flex: 0 0 auto;
+}
+
+.recent-remove {
+  display: grid;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  place-items: center;
+  align-self: stretch;
+  border-color: var(--line);
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+}
+
+.recent-remove:hover,
+.recent-remove:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .word-sidebar {
@@ -1173,6 +1269,7 @@ button:disabled {
 
 .subtitle-search-field {
   position: relative;
+  min-width: 0;
 }
 
 .subtitle-search-field > svg {
@@ -1186,7 +1283,9 @@ button:disabled {
 
 .subtitle-search-field input {
   width: 100%;
+  min-width: 0;
   min-height: 44px;
+  padding-right: 50px;
   padding-left: 42px;
 }
 
@@ -1826,7 +1925,7 @@ body.reader-focus-active {
   }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 700px) {
   .topbar {
     min-height: 68px;
     padding: max(10px, env(safe-area-inset-top)) 16px 10px;
@@ -1844,7 +1943,83 @@ body.reader-focus-active {
 
   .page {
     width: min(100% - 28px, 1180px);
-    padding: 28px 0 max(52px, env(safe-area-inset-bottom));
+    padding: 28px 0 calc(88px + env(safe-area-inset-bottom));
+  }
+
+  .mobile-tab-history .intro,
+  .mobile-tab-saved .intro,
+  .mobile-tab-home .word-sidebar,
+  .mobile-tab-history .main-column,
+  .mobile-tab-saved .main-column,
+  .mobile-tab-history .saved-panel,
+  .mobile-tab-saved .history-panel {
+    display: none;
+  }
+
+  .mobile-tab-history .page,
+  .mobile-tab-saved .page {
+    padding-top: 14px;
+  }
+
+  .mobile-tab-history .word-sidebar,
+  .mobile-tab-saved .word-sidebar {
+    display: grid;
+  }
+
+  .mobile-tab-history .saved-list,
+  .mobile-tab-saved .saved-list {
+    max-height: none;
+  }
+
+  .mobile-tabbar {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 25;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    border-top: 1px solid var(--line-strong);
+    padding: 6px max(10px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    background: rgba(13, 15, 13, 0.98);
+  }
+
+  .mobile-tabbar button {
+    display: grid;
+    min-width: 0;
+    min-height: 56px;
+    place-items: center;
+    align-content: center;
+    gap: 3px;
+    border-color: transparent;
+    padding: 3px 8px;
+    color: var(--muted);
+    background: transparent;
+    font-size: 0.62rem;
+  }
+
+  .mobile-tabbar button:hover,
+  .mobile-tabbar button:focus-visible,
+  .mobile-tabbar button.is-active {
+    border-color: transparent;
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .mobile-tabbar svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .tab-kanji {
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+    font-size: 1.15rem;
+    line-height: 1;
+  }
+
+  .reader-focus-active .mobile-tabbar {
+    display: none;
   }
 
   .has-reader {
@@ -2006,6 +2181,7 @@ body.reader-focus-active {
   }
 
   .reader.is-focused .reader-bar > div:first-child,
+  .reader.is-focused .change-subtitles,
   .reader.is-focused .copy-link,
   .reader.is-focused .reader-share-status,
   .reader.is-focused .reader-preferences,
@@ -2156,7 +2332,7 @@ body.reader-focus-active {
 
   .lookup {
     right: 14px;
-    bottom: max(14px, env(safe-area-inset-bottom));
+    bottom: calc(78px + env(safe-area-inset-bottom));
     width: calc(100% - 28px);
     padding: 18px;
   }

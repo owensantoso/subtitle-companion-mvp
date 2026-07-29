@@ -65,6 +65,7 @@ type RecentSubtitle = {
   name: string
   kind: 'catalog' | 'url' | 'local'
   viewedAt: string
+  positionMs?: number
   animeId?: string
   animeTitle?: string
   file?: SubtitleFile
@@ -93,6 +94,7 @@ const recentActivityLimit = 6
 
 type ExportFormat = 'tsv' | 'csv' | 'txt'
 type SubtitleDensity = 'compact' | 'comfortable'
+type MobileTab = 'home' | 'history' | 'saved'
 type ReaderSettings = {
   furigana: boolean
   furiganaOpacity: number
@@ -627,7 +629,32 @@ function PauseIcon() {
 function AutoScrollIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
-      <path d="M12 4v13m-4-4 4 4 4-4M6 20h12" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M18.2 8A7 7 0 0 0 6.1 6.1L4 8.2M5.8 16A7 7 0 0 0 17.9 17.9l2.1-2.1M4 4v4.2h4.2M20 20v-4.2h-4.2" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+      <path d="m6.5 6.5 11 11m0-11-11 11" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+function HistoryIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+      <path d="M4.4 8.5A8 8 0 1 1 4 14M4 4v4.5h4.5M12 7.5V12l3 1.8" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+function ChangeSubtitleIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19">
+      <path d="M5 4.5h8l3 3V10M5 4.5v15h7M13 4.5v3h3M8 10.5h4M8 14h3M18.2 17.7l2.3 2.3" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="16" cy="15.5" r="3.1" fill="none" stroke="currentColor" strokeWidth="1.8" />
     </svg>
   )
 }
@@ -686,6 +713,8 @@ function App() {
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const [recentActivity, setRecentActivity] = useState(loadRecentActivity)
   const [loadingRecentId, setLoadingRecentId] = useState('')
+  const [activeRecentId, setActiveRecentId] = useState('')
+  const [mobileTab, setMobileTab] = useState<MobileTab>('home')
   const [focusMode, setFocusMode] = useState(false)
   const [followCurrent, setFollowCurrent] = useState(true)
   const [importOpen, setImportOpen] = useState(true)
@@ -699,11 +728,13 @@ function App() {
   const subtitleListRef = useRef<HTMLOListElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const animeSearchRef = useRef<HTMLInputElement | null>(null)
+  const importCardRef = useRef<HTMLDetailsElement | null>(null)
   const readerPreferencesRef = useRef<HTMLDetailsElement | null>(null)
   const suggestionRefs = useRef<(HTMLButtonElement | null)[]>([])
   const deepLinkFileHandledRef = useRef(false)
   const scrollAnimationRef = useRef<number | null>(null)
   const playheadDraggingRef = useRef(false)
+  const playingTimestampRef = useRef(0)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
   const pendingLineRef = useRef<number | null>(Number.isFinite(linkedLine) && linkedLine >= 0 ? linkedLine : null)
 
@@ -730,6 +761,7 @@ function App() {
   const timelineStart = lines[0]?.startMs ?? 0
   const timelineEnd = lines.at(-1)?.endMs ?? 0
   const playingTimestamp = Math.min(timelineEnd, Math.max(timelineStart, virtualTime(tracker, tick)))
+  playingTimestampRef.current = playingTimestamp
   const timelineDuration = Math.max(1, timelineEnd - timelineStart)
   const playingPosition = ((playingTimestamp - timelineStart) / timelineDuration) * 100
   const viewedPosition = ((Math.min(timelineEnd, Math.max(timelineStart, viewedTimestamp)) - timelineStart) / timelineDuration) * 100
@@ -850,6 +882,23 @@ function App() {
   useEffect(() => {
     localStorage.setItem(recentActivityKey, JSON.stringify(recentActivity))
   }, [recentActivity])
+
+  useEffect(() => {
+    if (!activeRecentId) return
+    const id = window.setInterval(() => {
+      setRecentActivity((currentActivity) => {
+        const activeRecent = currentActivity.subtitles.find((recent) => recent.id === activeRecentId)
+        if (!activeRecent || Math.abs((activeRecent.positionMs ?? 0) - playingTimestampRef.current) < 1000) return currentActivity
+        return {
+          ...currentActivity,
+          subtitles: currentActivity.subtitles.map((recent) => (
+            recent.id === activeRecentId ? { ...recent, positionMs: playingTimestampRef.current } : recent
+          )),
+        }
+      })
+    }, 2000)
+    return () => window.clearInterval(id)
+  }, [activeRecentId])
 
   useEffect(() => {
     let cancelled = false
@@ -996,7 +1045,12 @@ function App() {
     setFollowCurrent(true)
     setTracker({ status: 'idle', anchorSubtitleMs, anchorClockMs: performance.now() })
     setImportOpen(false)
-    if (recent) recordRecentSubtitle(recent)
+    if (recent) {
+      setActiveRecentId(recent.id)
+      recordRecentSubtitle({ ...recent, positionMs: anchorSubtitleMs })
+    } else {
+      setActiveRecentId('')
+    }
   }
 
   function scrollListTo(targetTop: number, smooth = true) {
@@ -1099,12 +1153,54 @@ function App() {
     recordRecentSearch(entry)
   }
 
+  function clearAnimeSearch() {
+    setAnimeQuery('')
+    setActiveSuggestionIndex(0)
+    setSelectedAnime(null)
+    setActiveSubtitleFile(null)
+    setSubtitleFiles([])
+    setFilesStatus('')
+    setShareStatus('')
+    updateAnimeUrl(null)
+    window.requestAnimationFrame(() => animeSearchRef.current?.focus())
+  }
+
+  function openSubtitleChooser() {
+    setMobileTab('home')
+    setImportOpen(true)
+    window.requestAnimationFrame(() => {
+      importCardRef.current?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+      animeSearchRef.current?.focus({ preventScroll: true })
+    })
+  }
+
+  function removeRecentSearch(id: string) {
+    setRecentActivity((currentActivity) => ({
+      ...currentActivity,
+      searches: currentActivity.searches.filter((search) => search.id !== id),
+    }))
+  }
+
+  function removeRecentSubtitle(id: string) {
+    setRecentActivity((currentActivity) => ({
+      ...currentActivity,
+      subtitles: currentActivity.subtitles.filter((recent) => recent.id !== id),
+    }))
+    if (activeRecentId === id) setActiveRecentId('')
+  }
+
+  function selectMobileTab(nextTab: MobileTab) {
+    setMobileTab(nextTab)
+    window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  }
+
   function handleRecentSearch(search: RecentSearch) {
     const entry = animeCatalog.find((candidate) => animeStateId(candidate) === search.id)
     if (entry) handleAnimeSelect(entry)
   }
 
   async function handleRecentSubtitle(recent: RecentSubtitle) {
+    pendingLineRef.current = Number.isFinite(recent.positionMs) ? recent.positionMs ?? null : null
     if (recent.kind === 'local') {
       fileInputRef.current?.click()
       return
@@ -1128,6 +1224,7 @@ function App() {
           animeId: recent.animeId,
           animeTitle: recent.animeTitle,
           file: recent.file,
+          positionMs: recent.positionMs,
         })
       } else if (recent.kind === 'url' && recent.url) {
         const response = await fetch(recent.url)
@@ -1138,6 +1235,7 @@ function App() {
           name: recent.name,
           kind: recent.kind,
           url: recent.url,
+          positionMs: recent.positionMs,
         })
       }
     } catch (caught) {
@@ -1532,7 +1630,7 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell mobile-tab-${mobileTab}`}>
       <header className="topbar">
         <a className="brand" href="/" aria-label="Subtitle Companion home">
           <span className="brand-mark" aria-hidden="true">字</span>
@@ -1553,7 +1651,9 @@ function App() {
 
         <div className={lines.length > 0 ? 'workspace workspace-loaded' : 'workspace'}>
           <div className="main-column">
+            {lines.length === 0 || importOpen ? (
             <details
+              ref={importCardRef}
               className="import-card"
               open={importOpen}
               onToggle={(event) => setImportOpen(event.currentTarget.open)}
@@ -1600,8 +1700,7 @@ function App() {
                           event.preventDefault()
                           handleAnimeSelect(animeResults[activeSuggestionIndex])
                         } else if (event.key === 'Escape') {
-                          setAnimeQuery('')
-                          setActiveSuggestionIndex(0)
+                          clearAnimeSearch()
                         }
                       }}
                       aria-controls="anime-suggestions"
@@ -1609,6 +1708,11 @@ function App() {
                       aria-activedescendant={animeResults[activeSuggestionIndex] && !selectedAnime ? `anime-option-${activeSuggestionIndex}` : undefined}
                       aria-expanded={Boolean(animeQuery.trim() && !selectedAnime)}
                     />
+                    {animeQuery ? (
+                      <button className="search-clear" type="button" aria-label="Clear anime search" onClick={clearAnimeSearch}>
+                        <CloseIcon />
+                      </button>
+                    ) : null}
                   </div>
                   <p className="catalog-status">{catalogStatus}</p>
 
@@ -1619,16 +1723,20 @@ function App() {
                           <h3>Recent searches</h3>
                           <div className="recent-searches">
                             {recentActivity.searches.map((search) => (
-                              <button
-                                className="recent-search"
-                                type="button"
-                                key={search.id}
-                                onClick={() => handleRecentSearch(search)}
-                                disabled={animeCatalog.length === 0}
-                              >
-                                <span>{search.title}</span>
-                                {search.japaneseName ? <small lang="ja">{search.japaneseName}</small> : null}
-                              </button>
+                              <div className="recent-search-item" key={search.id}>
+                                <button
+                                  className="recent-search"
+                                  type="button"
+                                  onClick={() => handleRecentSearch(search)}
+                                  disabled={animeCatalog.length === 0}
+                                >
+                                  <span>{search.title}</span>
+                                  {search.japaneseName ? <small lang="ja">{search.japaneseName}</small> : null}
+                                </button>
+                                <button className="recent-remove" type="button" aria-label={`Remove ${search.title} from recent searches`} onClick={() => removeRecentSearch(search.id)}>
+                                  <CloseIcon />
+                                </button>
+                              </div>
                             ))}
                           </div>
                         </div>
@@ -1639,13 +1747,19 @@ function App() {
                           <h3>Recently viewed</h3>
                           <ol className="recent-subtitles">
                             {recentActivity.subtitles.map((recent) => (
-                              <li key={recent.id}>
-                                <button type="button" onClick={() => void handleRecentSubtitle(recent)} disabled={Boolean(loadingRecentId)}>
+                              <li className="recent-subtitle-item" key={recent.id}>
+                                <button className="recent-subtitle-open" type="button" onClick={() => void handleRecentSubtitle(recent)} disabled={Boolean(loadingRecentId)}>
                                   <span>
                                     <strong>{recent.name}</strong>
-                                    <small>{recent.animeTitle ?? (recent.kind === 'local' ? 'Local file' : 'Direct URL')}</small>
+                                    <small>
+                                      {recent.animeTitle ?? (recent.kind === 'local' ? 'Local file' : 'Direct URL')}
+                                      {Number.isFinite(recent.positionMs) ? ` · ${formatTime(recent.positionMs ?? 0)}` : ''}
+                                    </small>
                                   </span>
-                                  <em>{loadingRecentId === recent.id ? 'Opening…' : recent.kind === 'local' ? 'Choose again' : 'Open'}</em>
+                                  <em>{loadingRecentId === recent.id ? 'Opening…' : recent.kind === 'local' ? 'Choose again' : 'Continue'}</em>
+                                </button>
+                                <button className="recent-remove" type="button" aria-label={`Remove ${recent.name} from recently viewed`} onClick={() => removeRecentSubtitle(recent.id)}>
+                                  <CloseIcon />
                                 </button>
                               </li>
                             ))}
@@ -1693,13 +1807,7 @@ function App() {
                         </div>
                         <div className="anime-result-actions">
                           <button className="text-button" type="button" onClick={() => void shareSelectedAnime()}>Share</button>
-                          <button className="text-button" type="button" onClick={() => {
-                            setAnimeQuery('')
-                            setSelectedAnime(null)
-                            setSubtitleFiles([])
-                            setShareStatus('')
-                            updateAnimeUrl(null)
-                          }}>Change</button>
+                          <button className="text-button" type="button" onClick={clearAnimeSearch}>Change</button>
                         </div>
                       </header>
                       {shareStatus ? <p className="share-status" aria-live="polite">{shareStatus}</p> : null}
@@ -1756,6 +1864,7 @@ function App() {
                 </div>
               </div>
             </details>
+            ) : null}
 
             {lines.length > 0 ? (
               <section
@@ -1771,6 +1880,9 @@ function App() {
                     <p>{lines.length} subtitle lines</p>
                   </div>
                   <div className="reader-actions">
+                    <button className="secondary icon-button change-subtitles" type="button" aria-label="Change subtitles" title="Change subtitles" onClick={openSubtitleChooser}>
+                      <ChangeSubtitleIcon />
+                    </button>
                     <button className="secondary icon-button copy-link" type="button" aria-label="Copy subtitle link" title="Copy link" onClick={() => void copyReaderLink()}>
                       <LinkIcon />
                     </button>
@@ -1887,6 +1999,11 @@ function App() {
                         value={subtitleQuery}
                         onChange={(event) => setSubtitleQuery(event.target.value)}
                       />
+                      {subtitleQuery ? (
+                        <button className="search-clear" type="button" aria-label="Clear subtitle search" onClick={() => setSubtitleQuery('')}>
+                          <CloseIcon />
+                        </button>
+                      ) : null}
                     </div>
                     {subtitleQuery.trim() ? (
                       <div className="subtitle-search-results" aria-live="polite">
@@ -2058,7 +2175,7 @@ function App() {
           </div>
 
           <aside className="word-sidebar">
-            <section className="saved-lookups" aria-labelledby="history-title">
+            <section className="saved-lookups history-panel" aria-labelledby="history-title">
               <header className="saved-lookups-header">
                 <div>
                   <span className="section-number">02</span>
@@ -2134,7 +2251,7 @@ function App() {
               </div>
             </section>
 
-            <section className="saved-lookups favorite-words" aria-labelledby="favorites-title">
+            <section className="saved-lookups favorite-words saved-panel" aria-labelledby="favorites-title">
               <header className="saved-lookups-header">
                 <div>
                   <span className="section-number">03</span>
@@ -2194,6 +2311,21 @@ function App() {
           </aside>
         </div>
       </div>
+
+      <nav className="mobile-tabbar" aria-label="Primary">
+        <button className={mobileTab === 'home' ? 'is-active' : ''} type="button" aria-current={mobileTab === 'home' ? 'page' : undefined} onClick={() => selectMobileTab('home')}>
+          <span className="tab-kanji" aria-hidden="true">字</span>
+          <span>Home</span>
+        </button>
+        <button className={mobileTab === 'history' ? 'is-active' : ''} type="button" aria-current={mobileTab === 'history' ? 'page' : undefined} onClick={() => selectMobileTab('history')}>
+          <HistoryIcon />
+          <span>History</span>
+        </button>
+        <button className={mobileTab === 'saved' ? 'is-active' : ''} type="button" aria-current={mobileTab === 'saved' ? 'page' : undefined} onClick={() => selectMobileTab('saved')}>
+          <StarIcon filled={mobileTab === 'saved'} />
+          <span>Saved</span>
+        </button>
+      </nav>
 
       {selectedLookup ? (
         <aside className="lookup" role="dialog" aria-label="Dictionary lookup">
