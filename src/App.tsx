@@ -1,7 +1,15 @@
 /* eslint-disable react-hooks/purity */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import kuromoji from 'kuromoji/build/kuromoji.js'
 import type { IpadicFeatures, Tokenizer } from 'kuromoji'
+import {
+  listAjattSubtitleFiles,
+  loadAjattSubtitleFile,
+  loadAnimeCatalog,
+  searchAnimeCatalog,
+} from './subtitleSources'
+import type { AnimeCatalogEntry, SubtitleFile } from './subtitleSources'
 import './App.css'
 
 type SubtitleLine = {
@@ -49,6 +57,9 @@ type SavedLookup = {
 }
 
 const savedLookupsKey = 'subtitle-companion:saved-lookups:v1'
+const subtitleFontSizeKey = 'subtitle-companion:subtitle-font-size:v1'
+
+type ExportFormat = 'tsv' | 'csv' | 'txt'
 
 const seedDictionary: DictionaryEntry[] = [
   { surface: '私', reading: 'わたし', meaning: 'I; me' },
@@ -109,6 +120,10 @@ function parseAssTime(value: string) {
   return ((hours * 60 + minutes) * 60 + seconds) * 1000 + cs * 10
 }
 
+function cleanSubtitleText(text: string) {
+  return text.replace(/\{[^}]*}/g, '').replace(/\\N/g, '\n').trim()
+}
+
 function parseSrt(input: string): SubtitleLine[] {
   return input
     .trim()
@@ -119,7 +134,7 @@ function parseSrt(input: string): SubtitleLine[] {
       const timing = rows.find((row) => row.includes('-->'))
       if (!timing) throw new Error('SRT cue is missing timing')
       const [start, end] = timing.split('-->').map((part) => part.trim())
-      const text = rows.slice(rows.indexOf(timing) + 1).join('\n').trim()
+      const text = cleanSubtitleText(rows.slice(rows.indexOf(timing) + 1).join('\n'))
       return { id: `srt-${index}`, index, startMs: parseSrtTime(start), endMs: parseSrtTime(end), text, plainText: text }
     })
 }
@@ -135,13 +150,9 @@ function parseVtt(input: string): SubtitleLine[] {
       const timing = rows.find((row) => row.includes('-->'))
       if (!timing) throw new Error('VTT cue is missing timing')
       const [start, end] = timing.split('-->').map((part) => part.trim())
-      const text = rows.slice(rows.indexOf(timing) + 1).join('\n').trim()
+      const text = cleanSubtitleText(rows.slice(rows.indexOf(timing) + 1).join('\n'))
       return { id: `vtt-${index}`, index, startMs: parseVttTime(start), endMs: parseVttTime(end), text, plainText: text }
     })
-}
-
-function stripAssTags(text: string) {
-  return text.replace(/\{[^}]*}/g, '').replace(/\\N/g, '\n').trim()
 }
 
 function parseAss(input: string): SubtitleLine[] {
@@ -169,7 +180,7 @@ function parseAss(input: string): SubtitleLine[] {
     .filter((row) => row.trim().startsWith('Dialogue:'))
     .map((row, index) => {
       const columns = row.trim().replace('Dialogue:', '').trim().split(',')
-      const text = stripAssTags(columns.slice(textIndex).join(','))
+      const text = cleanSubtitleText(columns.slice(textIndex).join(','))
       return {
         id: `ass-${index}`,
         index,
@@ -302,6 +313,41 @@ function buildAnkiTsv(lookups: SavedLookup[]) {
   return rows.map((row) => row.map(escapeTsv).join('\t')).join('\n')
 }
 
+function escapeCsv(value: string | number) {
+  return `"${String(value).replace(/"/g, '""')}"`
+}
+
+function buildCsv(lookups: SavedLookup[]) {
+  const rows = [
+    ['Word', 'Reading', 'Meaning', 'Sentence', 'Start', 'End', 'Source'],
+    ...lookups.map((lookup) => [
+      lookup.surface,
+      lookup.reading,
+      lookup.meaning,
+      lookup.sentence,
+      formatTime(lookup.startMs),
+      formatTime(lookup.endMs),
+      lookup.sourceName,
+    ]),
+  ]
+
+  return rows.map((row) => row.map(escapeCsv).join(',')).join('\r\n')
+}
+
+function buildPlainText(lookups: SavedLookup[]) {
+  return lookups.map((lookup) => [
+    `${lookup.surface}${lookup.reading ? ` 【${lookup.reading}】` : ''}`,
+    lookup.meaning,
+    lookup.sentence,
+    `${formatTime(lookup.startMs)}–${formatTime(lookup.endMs)} · ${lookup.sourceName}`,
+  ].join('\n')).join('\n\n')
+}
+
+function loadSubtitleFontSize() {
+  const saved = Number(localStorage.getItem(subtitleFontSizeKey))
+  return [18, 22, 26, 30].includes(saved) ? saved : 22
+}
+
 function App() {
   const [sourceName, setSourceName] = useState('')
   const [url, setUrl] = useState('')
@@ -316,10 +362,21 @@ function App() {
   const [tokenizer, setTokenizer] = useState<Tokenizer<IpadicFeatures> | null>(null)
   const [tokenizerStatus, setTokenizerStatus] = useState('Loading Kuromoji tokenizer...')
   const [savedLookups, setSavedLookups] = useState<SavedLookup[]>(() => loadSavedLookups())
+  const [animeCatalog, setAnimeCatalog] = useState<AnimeCatalogEntry[]>([])
+  const [catalogStatus, setCatalogStatus] = useState('Loading anime catalog…')
+  const [animeQuery, setAnimeQuery] = useState('')
+  const [selectedAnime, setSelectedAnime] = useState<AnimeCatalogEntry | null>(null)
+  const [subtitleFiles, setSubtitleFiles] = useState<SubtitleFile[]>([])
+  const [filesStatus, setFilesStatus] = useState('')
+  const [loadingFileUrl, setLoadingFileUrl] = useState('')
+  const [subtitleFontSize, setSubtitleFontSize] = useState(loadSubtitleFontSize)
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('tsv')
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const liveRef = useRef<HTMLLIElement | null>(null)
 
   const current = currentSubtitle(lines, tracker, tick)
   const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets, tokenizer) })), [dictionaryBuckets, lines, tokenizer])
+  const animeResults = useMemo(() => searchAnimeCatalog(animeCatalog, animeQuery), [animeCatalog, animeQuery])
 
   useEffect(() => {
     const id = window.setInterval(() => setTick(performance.now()), 250)
@@ -362,6 +419,29 @@ function App() {
   }, [savedLookups])
 
   useEffect(() => {
+    localStorage.setItem(subtitleFontSizeKey, String(subtitleFontSize))
+  }, [subtitleFontSize])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void loadAnimeCatalog()
+      .then((entries) => {
+        if (cancelled) return
+        setAnimeCatalog(entries)
+        setCatalogStatus(`${entries.length.toLocaleString()} anime titles ready`)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setCatalogStatus('Anime search is unavailable right now; manual import still works')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
 
     kuromoji.builder({ dicPath: './kuromoji/' }).build((err, builtTokenizer) => {
@@ -379,15 +459,19 @@ function App() {
     }
   }, [])
 
+  function openSubtitle(name: string, text: string) {
+    const parsed = parseSubtitle(name, text)
+    setLines(parsed)
+    setSourceName(name)
+    setError('')
+    setTracker({ status: 'idle', anchorSubtitleMs: parsed[0]?.startMs ?? 0, anchorClockMs: performance.now() })
+  }
+
   async function handleFile(file?: File) {
     if (!file) return
     try {
       const text = await file.text()
-      const parsed = parseSubtitle(file.name, text)
-      setLines(parsed)
-      setSourceName(file.name)
-      setError('')
-      setTracker({ status: 'idle', anchorSubtitleMs: parsed[0]?.startMs ?? 0, anchorClockMs: performance.now() })
+      openSubtitle(file.name, text)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not read this subtitle file.')
     }
@@ -405,13 +489,39 @@ function App() {
     }
 
     try {
-      const parsed = parseSubtitle(url, text)
-      setLines(parsed)
-      setSourceName(url)
-      setError('')
-      setTracker({ status: 'idle', anchorSubtitleMs: parsed[0]?.startMs ?? 0, anchorClockMs: performance.now() })
+      openSubtitle(url, text)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unsupported subtitle format. Try .srt, .vtt, or .ass.')
+    }
+  }
+
+  async function handleAnimeSelect(entry: AnimeCatalogEntry) {
+    setSelectedAnime(entry)
+    setAnimeQuery(entry.title)
+    setSubtitleFiles([])
+    setFilesStatus('Loading available subtitle files…')
+    setError('')
+
+    try {
+      const files = await listAjattSubtitleFiles(entry)
+      setSubtitleFiles(files)
+      setFilesStatus(`${files.length} subtitle ${files.length === 1 ? 'file' : 'files'}`)
+    } catch (caught) {
+      setFilesStatus('')
+      setError(caught instanceof Error ? caught.message : 'Could not load subtitles for this title.')
+    }
+  }
+
+  async function handleAjattFile(file: SubtitleFile) {
+    setLoadingFileUrl(file.url)
+    setError('')
+    try {
+      const text = await loadAjattSubtitleFile(file)
+      openSubtitle(`${selectedAnime?.title ?? 'AJATT'} · ${file.name}`, text)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not load this subtitle file.')
+    } finally {
+      setLoadingFileUrl('')
     }
   }
 
@@ -469,19 +579,42 @@ function App() {
     setSavedLookups((currentLookups) => currentLookups.map((lookup) => lookup.id === id ? { ...lookup, selected: !lookup.selected } : lookup))
   }
 
-  function clearSavedLookups() {
+  function setAllLookupsSelected(selected: boolean) {
+    setSavedLookups((currentLookups) => currentLookups.map((lookup) => ({ ...lookup, selected })))
+  }
+
+  function confirmClearSavedLookups() {
     setSavedLookups([])
+    setClearConfirmOpen(false)
   }
 
   function exportSelectedLookups() {
     const selected = savedLookups.filter((lookup) => lookup.selected)
     if (selected.length === 0) return
 
-    const blob = new Blob([buildAnkiTsv(selected)], { type: 'text/tab-separated-values;charset=utf-8' })
+    const exports: Record<ExportFormat, { content: string; mime: string; filename: string }> = {
+      tsv: {
+        content: buildAnkiTsv(selected),
+        mime: 'text/tab-separated-values;charset=utf-8',
+        filename: 'subtitle-lookups-anki.tsv',
+      },
+      csv: {
+        content: buildCsv(selected),
+        mime: 'text/csv;charset=utf-8',
+        filename: 'subtitle-lookups.csv',
+      },
+      txt: {
+        content: buildPlainText(selected),
+        mime: 'text/plain;charset=utf-8',
+        filename: 'subtitle-lookups.txt',
+      },
+    }
+    const output = exports[exportFormat]
+    const blob = new Blob([output.content], { type: output.mime })
     const objectUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = objectUrl
-    link.download = 'subtitle-lookups-anki.tsv'
+    link.download = output.filename
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -490,113 +623,262 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="intro">
-        <p className="eyebrow">Static subtitle companion POC</p>
-        <h1>Watch in Japanese. Tap when a word gets interesting.</h1>
-        <p>Load local subtitles or a direct URL, run a local subtitle clock, and tap known words for readings and meanings. No backend required.</p>
-      </section>
-
-      <section className="import-card">
-        <label>
-          Subtitle file
-          <input type="file" onChange={(event) => void handleFile(event.target.files?.[0])} />
-          <span className="hint">iOS Safari can hide unknown extensions, so this picker allows any file and validates after selection.</span>
-        </label>
-
-        <label>
-          Subtitle URL
-          <span className="url-row">
-            <input placeholder="https://example.com/episode.srt" value={url} onChange={(event) => setUrl(event.target.value)} />
-            <button type="button" onClick={() => void handleUrlLoad()}>Load URL</button>
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="Subtitle Companion home">
+          <span className="brand-mark" aria-hidden="true">字</span>
+          <span>
+            <strong>Subtitle Companion</strong>
+            <small>Japanese subtitle reader</small>
           </span>
-        </label>
+        </a>
+        <span className="privacy-note"><i aria-hidden="true" /> Runs locally</span>
+      </header>
 
-        {error ? <p className="error">{error}</p> : null}
-        <p className="dictionary-status">{dictionaryStatus}</p>
-        <p className="dictionary-status">{tokenizerStatus}</p>
-      </section>
-
-      {lines.length > 0 ? (
-        <section className="reader">
-          <header className="reader-bar">
-            <div>
-              <p className="eyebrow">Loaded</p>
-              <h2>{sourceName}</h2>
-              <p>{lines.length} subtitle lines</p>
-            </div>
-            <button type="button" onClick={() => setFurigana((value) => !value)}>
-              {furigana ? 'Hide furigana' : 'Show furigana'}
-            </button>
-          </header>
-
-          <div className="controls">
-            <button type="button" onClick={togglePlayback}>{tracker.status === 'running' ? 'Pause' : tracker.status === 'paused' ? 'Resume' : 'Start'}</button>
-            <button type="button" onClick={() => liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>Jump to live</button>
-            <span>{tracker.status} · {formatTime(virtualTime(tracker, tick))}</span>
-          </div>
-
-          <ol className="subtitle-list">
-            {tokenizedLines.map(({ line, tokens }) => {
-              const isCurrent = line.id === current?.id
-              return (
-                <li className={isCurrent ? 'subtitle-line current' : 'subtitle-line'} key={line.id} ref={isCurrent ? liveRef : undefined}>
-                  <button className="time" type="button" onClick={() => reanchor(line)}>
-                    {formatTime(line.startMs)}
-                    <span>Re-anchor</span>
-                  </button>
-                  <p className="line-text">
-                    {tokens.map((token) => (
-                      <button className="token" key={token.id} type="button" onClick={() => handleTokenSelect(token, line)}>
-                        {furigana && token.hasKanji && token.reading ? (
-                          <ruby>{token.surface}<rt>{token.reading}</rt></ruby>
-                        ) : token.surface}
-                      </button>
-                    ))}
-                  </p>
-                </li>
-              )
-            })}
-          </ol>
+      <div className={lines.length > 0 ? 'page has-reader' : 'page'}>
+        <section className="intro">
+          <p className="eyebrow">Read · look up · collect</p>
+          <h1>Japanese subtitles.<br /><span>Read along.</span></h1>
+          <p>Open a subtitle file, keep time with the show, and tap any word for its reading and meaning.</p>
         </section>
-      ) : null}
 
-      <section className="saved-lookups">
-        <header className="saved-lookups-header">
-          <div>
-            <p className="eyebrow">Saved lookups</p>
-            <h2>{savedLookups.length} saved · {savedLookups.filter((lookup) => lookup.selected).length} selected</h2>
-          </div>
-          <div className="saved-actions">
-            <button type="button" onClick={exportSelectedLookups} disabled={savedLookups.every((lookup) => !lookup.selected)}>Export selected TSV</button>
-            <button className="secondary" type="button" onClick={clearSavedLookups} disabled={savedLookups.length === 0}>Clear</button>
-          </div>
-        </header>
+        <div className={lines.length > 0 ? 'workspace workspace-loaded' : 'workspace'}>
+          <div className="main-column">
+            <details className="import-card" open={lines.length === 0}>
+              <summary className="section-heading">
+                <span className="section-number">01</span>
+                <div>
+                  <h2>{lines.length > 0 ? 'Change subtitles' : 'Open subtitles'}</h2>
+                  <p>{lines.length > 0 ? sourceName : 'SRT, VTT, or ASS · stays on this device'}</p>
+                </div>
+                <span className="disclosure-label">{lines.length > 0 ? 'Change' : 'Open'}</span>
+              </summary>
 
-        {savedLookups.length === 0 ? (
-          <p className="empty-lookups">Tap words in subtitles and they will appear here for Anki export.</p>
-        ) : (
-          <ol className="saved-list">
-            {savedLookups.map((lookup) => (
-              <li className="saved-item" key={lookup.id}>
-                <label className="saved-check">
-                  <input checked={lookup.selected} type="checkbox" onChange={() => toggleSavedLookup(lookup.id)} />
-                  <span>
-                    <strong>{lookup.surface}</strong>
-                    {lookup.reading ? <span className="saved-reading"> {lookup.reading}</span> : null}
-                  </span>
-                </label>
-                <p>{lookup.meaning}</p>
-                <blockquote>{lookup.sentence}</blockquote>
-                <small>{formatTime(lookup.startMs)}-{formatTime(lookup.endMs)} · {lookup.sourceName}</small>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
+              <div className="import-body">
+                <div className="anime-search">
+                  <label htmlFor="anime-search">Search anime</label>
+                  <div className="search-field">
+                    <span aria-hidden="true">⌕</span>
+                    <input
+                      id="anime-search"
+                      type="search"
+                      autoComplete="off"
+                      placeholder="Try “One Punch Man” or ワンパンマン"
+                      value={animeQuery}
+                      onChange={(event) => {
+                        setAnimeQuery(event.target.value)
+                        setSelectedAnime(null)
+                        setSubtitleFiles([])
+                        setFilesStatus('')
+                      }}
+                      aria-controls="anime-suggestions"
+                      aria-autocomplete="list"
+                    />
+                  </div>
+                  <p className="catalog-status">{catalogStatus}</p>
+
+                  {animeQuery.trim() && !selectedAnime ? (
+                    <ul className="anime-suggestions" id="anime-suggestions" role="listbox">
+                      {animeResults.map((entry) => (
+                        <li key={entry.url}>
+                          <button type="button" role="option" onClick={() => void handleAnimeSelect(entry)}>
+                            <span>
+                              <strong>{entry.title}</strong>
+                              {entry.englishName && entry.englishName !== entry.title ? <small>{entry.englishName}</small> : null}
+                              {entry.japaneseName ? <small lang="ja">{entry.japaneseName}</small> : null}
+                            </span>
+                            <em>{entry.type}</em>
+                          </button>
+                        </li>
+                      ))}
+                      {animeResults.length === 0 && animeCatalog.length > 0 ? <li className="no-results">No matching anime found.</li> : null}
+                    </ul>
+                  ) : null}
+
+                  {selectedAnime ? (
+                    <section className="subtitle-results" aria-label={`Subtitles for ${selectedAnime.title}`}>
+                      <header>
+                        <div>
+                          <strong>{selectedAnime.title}</strong>
+                          <small>{filesStatus}</small>
+                        </div>
+                        <button className="text-button" type="button" onClick={() => {
+                          setAnimeQuery('')
+                          setSelectedAnime(null)
+                          setSubtitleFiles([])
+                        }}>Change</button>
+                      </header>
+                      {subtitleFiles.length > 0 ? (
+                        <ol className="subtitle-files">
+                          {subtitleFiles.map((file) => (
+                            <li key={file.url}>
+                              <button type="button" onClick={() => void handleAjattFile(file)} disabled={Boolean(loadingFileUrl)}>
+                                <span>{file.name}</span>
+                                <small>{loadingFileUrl === file.url ? 'Opening…' : file.size > 0 ? `${Math.ceil(file.size / 1024)} KB` : 'Open'}</small>
+                              </button>
+                            </li>
+                          ))}
+                        </ol>
+                      ) : null}
+                    </section>
+                  ) : null}
+                </div>
+
+                <details className="manual-import">
+                  <summary>Import a file or direct URL</summary>
+                  <div>
+                    <label className="file-picker">
+                      <input className="file-input" type="file" accept=".srt,.vtt,.ass" onChange={(event) => void handleFile(event.target.files?.[0])} />
+                      <span className="file-copy">
+                        <strong>Choose a subtitle file</strong>
+                        <small>SRT, VTT, or ASS · stays on this device</small>
+                      </span>
+                      <span className="browse-button" aria-hidden="true">Browse</span>
+                    </label>
+
+                    <div className="url-import">
+                      <label htmlFor="subtitle-url">Or load a direct URL</label>
+                      <div className="url-row">
+                        <input id="subtitle-url" placeholder="https://example.com/episode.srt" value={url} onChange={(event) => setUrl(event.target.value)} />
+                        <button type="button" onClick={() => void handleUrlLoad()}>Load</button>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+
+                <p className="source-links">
+                  Subtitle directories: <a href="https://subtitles.ajatt.top/" target="_blank" rel="noreferrer">AJATT mirror</a>
+                  <span aria-hidden="true">·</span>
+                  <a href="https://jimaku.cc/" target="_blank" rel="noreferrer">Jimaku</a>
+                  <span aria-hidden="true">·</span>
+                  <a href="https://kitsunekko.net/dirlist.php?dir=subtitles%2Fjapanese%2F" target="_blank" rel="noreferrer">Kitsunekko</a>
+                </p>
+
+                {error ? <p className="error" role="alert">{error}</p> : null}
+                <div className="system-status" aria-live="polite">
+                  <span><i aria-hidden="true" />{dictionaryStatus}</span>
+                  <span><i aria-hidden="true" />{tokenizerStatus}</span>
+                </div>
+              </div>
+            </details>
+
+            {lines.length > 0 ? (
+              <section className="reader" aria-labelledby="reader-title">
+                <header className="reader-bar">
+                  <div>
+                    <p className="eyebrow">Now reading</p>
+                    <h2 id="reader-title">{sourceName}</h2>
+                    <p>{lines.length} subtitle lines</p>
+                  </div>
+                  <div className="reader-settings">
+                    <label className="font-size-control">
+                      Text
+                      <select value={subtitleFontSize} onChange={(event) => setSubtitleFontSize(Number(event.target.value))}>
+                        <option value="18">Small</option>
+                        <option value="22">Medium</option>
+                        <option value="26">Large</option>
+                        <option value="30">Extra large</option>
+                      </select>
+                    </label>
+                    <button className="secondary" type="button" onClick={() => setFurigana((value) => !value)}>
+                      Furigana {furigana ? 'on' : 'off'}
+                    </button>
+                  </div>
+                </header>
+
+                <div className="controls">
+                  <button type="button" onClick={togglePlayback}>{tracker.status === 'running' ? 'Pause' : tracker.status === 'paused' ? 'Resume' : 'Start clock'}</button>
+                  <button className="text-button" type="button" onClick={() => liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>Jump to current</button>
+                  <span className="clock"><i className={tracker.status === 'running' ? 'is-live' : ''} aria-hidden="true" />{formatTime(virtualTime(tracker, tick))}</span>
+                </div>
+
+                <ol className="subtitle-list" style={{ '--subtitle-font-size': `${subtitleFontSize}px` } as CSSProperties}>
+                  {tokenizedLines.map(({ line, tokens }) => {
+                    const isCurrent = line.id === current?.id
+                    return (
+                      <li className={isCurrent ? 'subtitle-line current' : 'subtitle-line'} key={line.id} ref={isCurrent ? liveRef : undefined}>
+                        <button className="time" type="button" onClick={() => reanchor(line)} aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}>
+                          {formatTime(line.startMs)}
+                        </button>
+                        <p className="line-text">
+                          {tokens.map((token) => (
+                            token.surface.trim() === '' ? <span key={token.id}>{token.surface}</span> :
+                            <button className="token" key={token.id} type="button" onClick={() => handleTokenSelect(token, line)}>
+                              {furigana && token.hasKanji && token.reading ? (
+                                <ruby>{token.surface}<rt>{token.reading}</rt></ruby>
+                              ) : token.surface}
+                            </button>
+                          ))}
+                        </p>
+                      </li>
+                    )
+                  })}
+                </ol>
+              </section>
+            ) : null}
+          </div>
+
+          <section className="saved-lookups" aria-labelledby="saved-title">
+            <header className="saved-lookups-header">
+              <div>
+                <span className="section-number">02</span>
+                <h2 id="saved-title">Saved words</h2>
+              </div>
+              <span className="saved-count">{savedLookups.length}</span>
+            </header>
+            <p className="saved-summary">{savedLookups.filter((lookup) => lookup.selected).length} selected for export</p>
+
+            {savedLookups.length > 0 ? (
+              <div className="selection-actions">
+                <button className="text-button" type="button" onClick={() => setAllLookupsSelected(true)}>Select all</button>
+                <button className="text-button" type="button" onClick={() => setAllLookupsSelected(false)}>Deselect all</button>
+              </div>
+            ) : null}
+
+            {savedLookups.length === 0 ? (
+              <div className="empty-lookups">
+                <span aria-hidden="true">あ</span>
+                <p>Your word list is empty.</p>
+                <small>Tap a word in the subtitles to save it here.</small>
+              </div>
+            ) : (
+              <ol className="saved-list">
+                {savedLookups.map((lookup) => (
+                  <li className="saved-item" key={lookup.id}>
+                    <label className="saved-check">
+                      <input checked={lookup.selected} type="checkbox" onChange={() => toggleSavedLookup(lookup.id)} />
+                      <span>
+                        <strong>{lookup.surface}</strong>
+                        {lookup.reading ? <span className="saved-reading">{lookup.reading}</span> : null}
+                      </span>
+                    </label>
+                    <p>{lookup.meaning}</p>
+                    <blockquote>{lookup.sentence}</blockquote>
+                    <small>{formatTime(lookup.startMs)}–{formatTime(lookup.endMs)}</small>
+                  </li>
+                ))}
+              </ol>
+            )}
+
+            <div className="saved-actions">
+              <div className="export-split">
+                <button type="button" onClick={exportSelectedLookups} disabled={savedLookups.every((lookup) => !lookup.selected)}>
+                  Export {exportFormat.toUpperCase()}
+                </button>
+                <select aria-label="Export format" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}>
+                  <option value="tsv">TSV · Anki</option>
+                  <option value="csv">CSV</option>
+                  <option value="txt">TXT</option>
+                </select>
+              </div>
+              <button className="text-button danger-text" type="button" onClick={() => setClearConfirmOpen(true)} disabled={savedLookups.length === 0}>Clear list</button>
+            </div>
+          </section>
+        </div>
+      </div>
 
       {selectedToken ? (
         <aside className="lookup" role="dialog" aria-label="Dictionary lookup">
-          <button className="close" type="button" onClick={() => setSelectedToken(null)}>Close</button>
+          <button className="close" type="button" onClick={() => setSelectedToken(null)} aria-label="Close dictionary lookup">Close</button>
           <p className="eyebrow">Lookup</p>
           <h2>{selectedToken.surface}</h2>
           {selectedToken.entry ? (
@@ -613,6 +895,20 @@ function App() {
             <p>No dictionary match found.</p>
           )}
         </aside>
+      ) : null}
+
+      {clearConfirmOpen ? (
+        <div className="modal-backdrop">
+          <section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="clear-title" aria-describedby="clear-description">
+            <p className="eyebrow">Confirm action</p>
+            <h2 id="clear-title">Clear saved words?</h2>
+            <p id="clear-description">This removes all {savedLookups.length} saved {savedLookups.length === 1 ? 'lookup' : 'lookups'} from this device.</p>
+            <div>
+              <button className="secondary" type="button" onClick={() => setClearConfirmOpen(false)}>Cancel</button>
+              <button className="danger-button" type="button" onClick={confirmClearSavedLookups}>Clear list</button>
+            </div>
+          </section>
+        </div>
       ) : null}
     </main>
   )
