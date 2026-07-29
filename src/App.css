@@ -316,6 +316,7 @@ button:active,
 
 .anime-suggestions button:hover,
 .anime-suggestions button:focus-visible,
+.anime-suggestions button.is-active,
 .subtitle-files button:hover,
 .subtitle-files button:focus-visible {
   color: var(--ink);
@@ -746,9 +747,14 @@ button:disabled {
   flex: 0 0 auto;
 }
 
-.saved-lookups {
+.word-sidebar {
   position: sticky;
   top: 20px;
+  display: grid;
+  gap: 20px;
+}
+
+.saved-lookups {
   padding: 24px;
 }
 
@@ -825,6 +831,18 @@ button:disabled {
   margin: 0;
 }
 
+.compact-empty {
+  min-height: 156px;
+  padding: 20px;
+}
+
+.compact-empty > svg {
+  width: 30px;
+  height: 30px;
+  margin: 0 auto 14px;
+  color: var(--muted);
+}
+
 .empty-lookups p {
   color: var(--ink);
   font-size: 0.9rem;
@@ -868,7 +886,7 @@ button:disabled {
 .saved-list {
   display: grid;
   gap: 0;
-  max-height: 55vh;
+  max-height: 38vh;
   margin: 22px 0 0;
   overflow-y: auto;
   border-top: 1px solid var(--line);
@@ -913,6 +931,46 @@ button:disabled {
   cursor: pointer;
 }
 
+.saved-item-top,
+.saved-word {
+  display: flex;
+  align-items: center;
+}
+
+.saved-item-top {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.saved-word {
+  gap: 8px;
+}
+
+.saved-word strong {
+  font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+  font-size: 1.25rem;
+}
+
+.star-button {
+  display: grid;
+  flex: 0 0 44px;
+  width: 44px;
+  min-height: 44px;
+  place-items: center;
+  border-color: transparent;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+}
+
+.star-button:hover,
+.star-button:focus-visible,
+.star-button.is-saved {
+  border-color: transparent;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .saved-check input {
   width: 17px;
   height: 17px;
@@ -952,6 +1010,26 @@ button:disabled {
 
 .reader-bar {
   border-bottom: 1px solid var(--line);
+}
+
+.reader-bar > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.reader-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.reader-share-status {
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 18px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.68rem;
 }
 
 .reader-settings {
@@ -1016,12 +1094,29 @@ button:disabled {
   padding: 0 8px;
 }
 
+.number-setting {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  border-left: 1px solid var(--line-strong);
+  padding-right: 8px;
+  color: var(--ink);
+  background: #0d0f0d;
+}
+
+.number-setting input {
+  width: 58px;
+  min-height: 42px;
+  border: 0;
+  padding: 0 4px 0 8px;
+  text-align: right;
+}
+
 .reader-bar h2 {
   max-width: min(58vw, 620px);
-  overflow: hidden;
   font-size: 1rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .reader-bar > div > p:last-child {
@@ -1068,13 +1163,35 @@ button:disabled {
 
 .subtitle-line {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: 58px minmax(0, 1fr) 44px;
   gap: 12px;
   align-items: start;
   border-bottom: 1px solid var(--line);
   padding: 16px 18px;
   background: var(--surface);
   transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+.line-meta {
+  min-width: 0;
+}
+
+.line-share {
+  display: grid;
+  width: 44px;
+  min-height: 44px;
+  place-items: center;
+  border-color: transparent;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+}
+
+.line-share:hover,
+.line-share:focus-visible {
+  border-color: transparent;
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .subtitle-line.current {
@@ -1215,6 +1332,23 @@ body.reader-focus-active {
   font-weight: 700;
 }
 
+.lookup-save {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: transparent;
+}
+
+.lookup-save.is-saved {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .close {
   float: right;
   min-height: 38px;
@@ -1288,7 +1422,7 @@ body.reader-focus-active {
     grid-template-columns: 1fr;
   }
 
-  .saved-lookups {
+  .word-sidebar {
     position: static;
   }
 }
@@ -1363,7 +1497,7 @@ body.reader-focus-active {
   }
 
   .reader-bar {
-    align-items: center;
+    align-items: flex-start;
     padding: 12px 14px;
   }
 
@@ -1387,8 +1521,23 @@ body.reader-focus-active {
   }
 
   .reader-bar h2 {
-    max-width: 58vw;
+    max-width: none;
     font-size: 0.85rem;
+  }
+
+  .reader-actions {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .reader-actions button {
+    min-height: 40px;
+    padding-inline: 10px;
+    font-size: 0.68rem;
+  }
+
+  .reader-share-status {
+    padding-inline: 14px;
   }
 
   .controls {
@@ -1412,7 +1561,7 @@ body.reader-focus-active {
   }
 
   .subtitle-line {
-    grid-template-columns: 46px minmax(0, 1fr);
+    grid-template-columns: 42px minmax(0, 1fr) 44px;
     gap: 8px;
     padding: 14px;
   }

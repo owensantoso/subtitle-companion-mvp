@@ -55,6 +55,11 @@ type SavedLookup = {
   selected: boolean
 }
 
+type SelectedLookup = {
+  token: Token
+  lookup: SavedLookup
+}
+
 type RecentSubtitle = {
   id: string
   name: string
@@ -78,7 +83,9 @@ type RecentActivity = {
   searches: RecentSearch[]
 }
 
-const savedLookupsKey = 'subtitle-companion:saved-lookups:v1'
+const legacySavedLookupsKey = 'subtitle-companion:saved-lookups:v1'
+const lookupHistoryKey = 'subtitle-companion:lookup-history:v1'
+const favoriteWordsKey = 'subtitle-companion:favorite-words:v1'
 const subtitleFontSizeKey = 'subtitle-companion:subtitle-font-size:v1'
 const readerSettingsKey = 'subtitle-companion:reader-settings:v1'
 const recentActivityKey = 'subtitle-companion:recent-activity:v1'
@@ -319,9 +326,9 @@ function makeLookupId(source: string, line: SubtitleLine, token: Token) {
   return [source, line.startMs, line.endMs, token.surface, line.plainText].join('|')
 }
 
-function loadSavedLookups(): SavedLookup[] {
+function loadLookups(key: string, fallbackKey?: string): SavedLookup[] {
   try {
-    const raw = localStorage.getItem(savedLookupsKey)
+    const raw = localStorage.getItem(key) ?? (fallbackKey ? localStorage.getItem(fallbackKey) : null)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed : []
@@ -390,10 +397,18 @@ function loadReaderSettings(): ReaderSettings {
   try {
     const parsed = JSON.parse(localStorage.getItem(readerSettingsKey) ?? '{}') as Partial<ReaderSettings>
     const legacyFontSize = Number(localStorage.getItem(subtitleFontSizeKey))
+    const params = new URLSearchParams(window.location.search)
+    const linkedFontSize = Number(params.get('font'))
+    const linkedOpacity = Number(params.get('furigana'))
+    const storedOpacity = Number(parsed.furiganaOpacity)
     return {
       furigana: typeof parsed.furigana === 'boolean' ? parsed.furigana : defaults.furigana,
-      furiganaOpacity: [40, 60, 80, 100].includes(Number(parsed.furiganaOpacity)) ? Number(parsed.furiganaOpacity) : defaults.furiganaOpacity,
-      subtitleFontSize: [18, 22, 26, 30].includes(Number(parsed.subtitleFontSize))
+      furiganaOpacity: Number.isFinite(linkedOpacity) && params.has('furigana')
+        ? Math.min(100, Math.max(0, linkedOpacity))
+        : Number.isFinite(storedOpacity) ? Math.min(100, Math.max(0, storedOpacity)) : defaults.furiganaOpacity,
+      subtitleFontSize: [18, 22, 26, 30].includes(linkedFontSize)
+        ? linkedFontSize
+        : [18, 22, 26, 30].includes(Number(parsed.subtitleFontSize))
         ? Number(parsed.subtitleFontSize)
         : [18, 22, 26, 30].includes(legacyFontSize) ? legacyFontSize : defaults.subtitleFontSize,
     }
@@ -422,10 +437,40 @@ function updateAnimeUrl(entry: AnimeCatalogEntry | null) {
   const nextUrl = new URL(window.location.href)
   if (entry) {
     nextUrl.searchParams.set('anime', animeStateId(entry))
+    nextUrl.searchParams.delete('subtitle')
+    nextUrl.searchParams.delete('line')
   } else {
     nextUrl.searchParams.delete('anime')
+    nextUrl.searchParams.delete('subtitle')
+    nextUrl.searchParams.delete('line')
   }
   window.history.replaceState({}, '', nextUrl)
+}
+
+function favoriteWordId(lookup: SavedLookup) {
+  return `${lookup.surface}|${lookup.reading}`
+}
+
+function StarIcon({ filled = false }: { filled?: boolean }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+      <path
+        d="m12 3.4 2.65 5.37 5.93.86-4.29 4.18 1.01 5.9L12 16.92l-5.3 2.79 1.01-5.9-4.29-4.18 5.93-.86L12 3.4Z"
+        fill={filled ? 'currentColor' : 'none'}
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.7"
+      />
+    </svg>
+  )
+}
+
+function ShareIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17">
+      <path d="M8 12h9m-4-4 4 4-4 4M5 5v14" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  )
 }
 
 function App() {
@@ -435,13 +480,14 @@ function App() {
   const [error, setError] = useState('')
   const [tracker, setTracker] = useState<Tracker>({ status: 'idle', anchorSubtitleMs: 0, anchorClockMs: performance.now() })
   const [tick, setTick] = useState(performance.now())
-  const [selectedToken, setSelectedToken] = useState<Token | null>(null)
+  const [selectedLookup, setSelectedLookup] = useState<SelectedLookup | null>(null)
   const [readerSettings, setReaderSettings] = useState(loadReaderSettings)
   const [dictionaryBuckets, setDictionaryBuckets] = useState<DictionaryBuckets>(seedBuckets)
   const [dictionaryStatus, setDictionaryStatus] = useState('Loading full JMdict...')
   const [tokenizer, setTokenizer] = useState<Tokenizer<IpadicFeatures> | null>(null)
   const [tokenizerStatus, setTokenizerStatus] = useState('Loading Kuromoji tokenizer...')
-  const [savedLookups, setSavedLookups] = useState<SavedLookup[]>(() => loadSavedLookups())
+  const [lookupHistory, setLookupHistory] = useState<SavedLookup[]>(() => loadLookups(lookupHistoryKey, legacySavedLookupsKey))
+  const [favoriteWords, setFavoriteWords] = useState<SavedLookup[]>(() => loadLookups(favoriteWordsKey))
   const [animeCatalog, setAnimeCatalog] = useState<AnimeCatalogEntry[]>([])
   const [catalogStatus, setCatalogStatus] = useState('Loading anime catalog…')
   const [animeQuery, setAnimeQuery] = useState('')
@@ -451,18 +497,53 @@ function App() {
   const [loadingFileUrl, setLoadingFileUrl] = useState('')
   const [shareStatus, setShareStatus] = useState('')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('tsv')
+  const [favoriteExportFormat, setFavoriteExportFormat] = useState<ExportFormat>('tsv')
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
+  const [activeSubtitleFile, setActiveSubtitleFile] = useState<SubtitleFile | null>(null)
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const [recentActivity, setRecentActivity] = useState(loadRecentActivity)
   const [loadingRecentId, setLoadingRecentId] = useState('')
   const [focusMode, setFocusMode] = useState(false)
   const [followCurrent, setFollowCurrent] = useState(true)
+  const [importOpen, setImportOpen] = useState(true)
   const liveRef = useRef<HTMLLIElement | null>(null)
   const subtitleListRef = useRef<HTMLOListElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const animeSearchRef = useRef<HTMLInputElement | null>(null)
+  const suggestionRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const deepLinkFileHandledRef = useRef(false)
+  const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
+  const pendingLineRef = useRef<number | null>(Number.isFinite(linkedLine) && linkedLine >= 0 ? linkedLine : null)
 
   const current = currentSubtitle(lines, tracker, tick)
   const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets, tokenizer) })), [dictionaryBuckets, lines, tokenizer])
   const animeResults = useMemo(() => searchAnimeCatalog(animeCatalog, animeQuery), [animeCatalog, animeQuery])
+
+  useEffect(() => {
+    suggestionRefs.current[activeSuggestionIndex]?.scrollIntoView({ block: 'nearest' })
+  }, [activeSuggestionIndex])
+
+  useEffect(() => {
+    const handleTypeToSearch = (event: KeyboardEvent) => {
+      if (focusMode || selectedLookup || clearConfirmOpen || event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+      event.preventDefault()
+      setImportOpen(true)
+      window.requestAnimationFrame(() => animeSearchRef.current?.focus())
+      setAnimeQuery((currentQuery) => selectedAnime || lines.length > 0 ? event.key : `${currentQuery}${event.key}`)
+      setSelectedAnime(null)
+      setActiveSubtitleFile(null)
+      setSubtitleFiles([])
+      setFilesStatus('')
+      setShareStatus('')
+      updateAnimeUrl(null)
+      setActiveSuggestionIndex(0)
+    }
+
+    window.addEventListener('keydown', handleTypeToSearch)
+    return () => window.removeEventListener('keydown', handleTypeToSearch)
+  }, [clearConfirmOpen, focusMode, lines.length, selectedAnime, selectedLookup])
 
   useEffect(() => {
     const id = window.setInterval(() => setTick(performance.now()), 250)
@@ -524,12 +605,28 @@ function App() {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(savedLookupsKey, JSON.stringify(savedLookups))
-  }, [savedLookups])
+    localStorage.setItem(lookupHistoryKey, JSON.stringify(lookupHistory))
+  }, [lookupHistory])
+
+  useEffect(() => {
+    localStorage.setItem(favoriteWordsKey, JSON.stringify(favoriteWords))
+  }, [favoriteWords])
 
   useEffect(() => {
     localStorage.setItem(readerSettingsKey, JSON.stringify(readerSettings))
   }, [readerSettings])
+
+  useEffect(() => {
+    if (lines.length === 0) return
+    const nextUrl = new URL(window.location.href)
+    if (selectedAnime) nextUrl.searchParams.set('anime', animeStateId(selectedAnime))
+    else nextUrl.searchParams.delete('anime')
+    if (activeSubtitleFile) nextUrl.searchParams.set('subtitle', activeSubtitleFile.name)
+    else nextUrl.searchParams.delete('subtitle')
+    nextUrl.searchParams.set('font', String(readerSettings.subtitleFontSize))
+    nextUrl.searchParams.set('furigana', String(readerSettings.furiganaOpacity))
+    window.history.replaceState({}, '', nextUrl)
+  }, [activeSubtitleFile, lines.length, readerSettings.furiganaOpacity, readerSettings.subtitleFontSize, selectedAnime])
 
   useEffect(() => {
     localStorage.setItem(recentActivityKey, JSON.stringify(recentActivity))
@@ -587,6 +684,30 @@ function App() {
   }, [selectedAnime])
 
   useEffect(() => {
+    if (deepLinkFileHandledRef.current || !selectedAnime || subtitleFiles.length === 0) return
+    const requestedFile = new URLSearchParams(window.location.search).get('subtitle')
+    if (!requestedFile) return
+    const file = subtitleFiles.find((candidate) => candidate.name === requestedFile)
+    deepLinkFileHandledRef.current = true
+    const timer = window.setTimeout(() => {
+      if (!file) {
+        setError('The shared subtitle file is no longer available. Choose another file for this anime.')
+        return
+      }
+      void handleAjattFile(file, true)
+    }, 0)
+    return () => window.clearTimeout(timer)
+    // The deep link must run once after the async subtitle list arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAnime, subtitleFiles])
+
+  useEffect(() => {
+    if (pendingLineRef.current === null || !current) return
+    pendingLineRef.current = null
+    window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center', false))
+  }, [current, focusMode])
+
+  useEffect(() => {
     let cancelled = false
 
     kuromoji.builder({ dicPath: './kuromoji/' }).build((err, builtTokenizer) => {
@@ -638,12 +759,19 @@ function App() {
 
   function openSubtitle(name: string, text: string, recent?: Omit<RecentSubtitle, 'viewedAt'>) {
     const parsed = parseSubtitle(name, text)
+    const requestedLine = pendingLineRef.current
+    const anchorSubtitleMs = requestedLine === null
+      ? parsed[0]?.startMs ?? 0
+      : parsed.length > 0
+        ? parsed.reduce((nearest, line) => Math.abs(line.startMs - requestedLine) < Math.abs(nearest.startMs - requestedLine) ? line : nearest, parsed[0]).startMs
+        : 0
     setLines(parsed)
     setSourceName(name)
     setError('')
-    setSelectedToken(null)
+    setSelectedLookup(null)
     setFollowCurrent(true)
-    setTracker({ status: 'idle', anchorSubtitleMs: parsed[0]?.startMs ?? 0, anchorClockMs: performance.now() })
+    setTracker({ status: 'idle', anchorSubtitleMs, anchorClockMs: performance.now() })
+    setImportOpen(false)
     if (recent) recordRecentSubtitle(recent)
   }
 
@@ -663,6 +791,7 @@ function App() {
   async function handleFile(file?: File) {
     if (!file) return
     try {
+      setActiveSubtitleFile(null)
       const text = await file.text()
       openSubtitle(file.name, text, {
         id: `local:${file.name}`,
@@ -686,6 +815,7 @@ function App() {
     }
 
     try {
+      setActiveSubtitleFile(null)
       openSubtitle(url, text, {
         id: `url:${url}`,
         name: url.split('/').pop() || url,
@@ -703,6 +833,8 @@ function App() {
     setError('')
     setShareStatus('')
     setSelectedAnime(entry)
+    setActiveSubtitleFile(null)
+    deepLinkFileHandledRef.current = true
     setAnimeQuery(entry.title)
     updateAnimeUrl(entry)
     recordRecentSearch(entry)
@@ -729,6 +861,7 @@ function App() {
           : undefined
         if (entry) handleAnimeSelect(entry)
         const text = await loadAjattSubtitleFile(recent.file)
+        setActiveSubtitleFile(recent.file)
         openSubtitle(`${recent.animeTitle ?? 'AJATT'} · ${recent.file.name}`, text, {
           id: recent.id,
           name: recent.name,
@@ -760,10 +893,31 @@ function App() {
     window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center'))
   }
 
+  function buildShareUrl(lineMs?: number) {
+    const shareUrl = new URL(window.location.href)
+    if (selectedAnime) shareUrl.searchParams.set('anime', animeStateId(selectedAnime))
+    else shareUrl.searchParams.delete('anime')
+    if (activeSubtitleFile) shareUrl.searchParams.set('subtitle', activeSubtitleFile.name)
+    else shareUrl.searchParams.delete('subtitle')
+    shareUrl.searchParams.set('font', String(readerSettings.subtitleFontSize))
+    shareUrl.searchParams.set('furigana', String(readerSettings.furiganaOpacity))
+    if (lineMs === undefined) shareUrl.searchParams.delete('line')
+    else shareUrl.searchParams.set('line', String(lineMs))
+    return shareUrl
+  }
+
+  async function copyShareUrl(shareUrl: URL, successMessage: string) {
+    try {
+      await navigator.clipboard.writeText(shareUrl.href)
+      setShareStatus(successMessage)
+    } catch {
+      setShareStatus('Copy the URL from your browser')
+    }
+  }
+
   async function shareSelectedAnime() {
     if (!selectedAnime) return
-    const shareUrl = new URL(window.location.href)
-    shareUrl.searchParams.set('anime', animeStateId(selectedAnime))
+    const shareUrl = buildShareUrl()
     const shareData = {
       title: `${selectedAnime.title} Japanese subtitles`,
       text: `Open Japanese subtitles for ${selectedAnime.title}`,
@@ -775,25 +929,55 @@ function App() {
         await navigator.share(shareData)
         setShareStatus('Shared')
       } else {
-        await navigator.clipboard.writeText(shareUrl.href)
-        setShareStatus('Link copied')
+        await copyShareUrl(shareUrl, 'Link copied')
       }
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') return
       try {
-        await navigator.clipboard.writeText(shareUrl.href)
-        setShareStatus('Link copied')
+        await copyShareUrl(shareUrl, 'Link copied')
       } catch {
         setShareStatus('Copy the URL from your browser')
       }
     }
   }
 
-  async function handleAjattFile(file: SubtitleFile) {
+  async function copyReaderLink() {
+    await copyShareUrl(buildShareUrl(), activeSubtitleFile ? 'Exact subtitle link copied' : 'Reader link copied')
+  }
+
+  async function shareSubtitleLine(line: SubtitleLine) {
+    const shareUrl = buildShareUrl(line.startMs)
+    const shareData = {
+      title: `${sourceName} at ${formatTime(line.startMs)}`,
+      text: line.plainText,
+      url: shareUrl.href,
+    }
+
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData)
+        setShareStatus('Line shared')
+      } else {
+        await copyShareUrl(shareUrl, 'Line link copied')
+      }
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'AbortError') return
+      await copyShareUrl(shareUrl, 'Line link copied')
+    }
+  }
+
+  async function handleAjattFile(file: SubtitleFile, preserveSharedLine = false) {
     setLoadingFileUrl(file.url)
     setError('')
+    if (!preserveSharedLine) {
+      pendingLineRef.current = null
+      const nextUrl = new URL(window.location.href)
+      nextUrl.searchParams.delete('line')
+      window.history.replaceState({}, '', nextUrl)
+    }
     try {
       const text = await loadAjattSubtitleFile(file)
+      setActiveSubtitleFile(file)
       openSubtitle(`${selectedAnime?.title ?? 'AJATT'} · ${file.name}`, text, {
         id: `catalog:${file.url}`,
         name: file.name,
@@ -848,7 +1032,7 @@ function App() {
       selected: true,
     }
 
-    setSavedLookups((currentLookups) => {
+    setLookupHistory((currentLookups) => {
       const existing = currentLookups.find((lookup) => lookup.id === id)
       if (!existing) return [nextLookup, ...currentLookups]
       return currentLookups.map((lookup) => lookup.id === id ? { ...lookup, lookedUpAt: nextLookup.lookedUpAt, selected: true } : lookup)
@@ -856,45 +1040,70 @@ function App() {
   }
 
   function handleTokenSelect(token: Token, line: SubtitleLine) {
-    setSelectedToken(token)
+    const lookup: SavedLookup = {
+      id: makeLookupId(sourceName, line, token),
+      sourceName,
+      surface: token.surface,
+      reading: token.reading ?? token.entry?.reading ?? '',
+      meaning: token.entry?.meaning ?? 'No dictionary match found.',
+      sentence: line.plainText,
+      startMs: line.startMs,
+      endMs: line.endMs,
+      lookedUpAt: new Date().toISOString(),
+      selected: true,
+    }
+    setSelectedLookup({ token, lookup })
     saveLookup(token, line)
   }
 
   function toggleSavedLookup(id: string) {
-    setSavedLookups((currentLookups) => currentLookups.map((lookup) => lookup.id === id ? { ...lookup, selected: !lookup.selected } : lookup))
+    setLookupHistory((currentLookups) => currentLookups.map((lookup) => lookup.id === id ? { ...lookup, selected: !lookup.selected } : lookup))
   }
 
   function setAllLookupsSelected(selected: boolean) {
-    setSavedLookups((currentLookups) => currentLookups.map((lookup) => ({ ...lookup, selected })))
+    setLookupHistory((currentLookups) => currentLookups.map((lookup) => ({ ...lookup, selected })))
+  }
+
+  function isFavorite(lookup: SavedLookup) {
+    const id = favoriteWordId(lookup)
+    return favoriteWords.some((favorite) => favorite.id === id)
+  }
+
+  function toggleFavorite(lookup: SavedLookup) {
+    const id = favoriteWordId(lookup)
+    setFavoriteWords((currentFavorites) => {
+      if (currentFavorites.some((favorite) => favorite.id === id)) {
+        return currentFavorites.filter((favorite) => favorite.id !== id)
+      }
+      return [{ ...lookup, id, selected: true, lookedUpAt: new Date().toISOString() }, ...currentFavorites]
+    })
   }
 
   function confirmClearSavedLookups() {
-    setSavedLookups([])
+    setLookupHistory([])
     setClearConfirmOpen(false)
   }
 
-  function exportSelectedLookups() {
-    const selected = savedLookups.filter((lookup) => lookup.selected)
-    if (selected.length === 0) return
-
+  function exportLookups(lookups: SavedLookup[], format: ExportFormat, filenameStem: string) {
+    if (lookups.length === 0) return
     const exports: Record<ExportFormat, { content: string; mime: string; filename: string }> = {
       tsv: {
-        content: buildAnkiTsv(selected),
+        content: buildAnkiTsv(lookups),
         mime: 'text/tab-separated-values;charset=utf-8',
-        filename: 'subtitle-lookups-anki.tsv',
+        filename: `${filenameStem}-anki.tsv`,
       },
       csv: {
-        content: buildCsv(selected),
+        content: buildCsv(lookups),
         mime: 'text/csv;charset=utf-8',
-        filename: 'subtitle-lookups.csv',
+        filename: `${filenameStem}.csv`,
       },
       txt: {
-        content: buildPlainText(selected),
+        content: buildPlainText(lookups),
         mime: 'text/plain;charset=utf-8',
-        filename: 'subtitle-lookups.txt',
+        filename: `${filenameStem}.txt`,
       },
     }
-    const output = exports[exportFormat]
+    const output = exports[format]
     const blob = new Blob([output.content], { type: output.mime })
     const objectUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -904,6 +1113,10 @@ function App() {
     link.click()
     link.remove()
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+  }
+
+  function exportSelectedLookups() {
+    exportLookups(lookupHistory.filter((lookup) => lookup.selected), exportFormat, 'subtitle-lookup-history')
   }
 
   return (
@@ -928,7 +1141,11 @@ function App() {
 
         <div className={lines.length > 0 ? 'workspace workspace-loaded' : 'workspace'}>
           <div className="main-column">
-            <details className="import-card" open={lines.length === 0}>
+            <details
+              className="import-card"
+              open={importOpen}
+              onToggle={(event) => setImportOpen(event.currentTarget.open)}
+            >
               <summary className="section-heading">
                 <span className="section-number">01</span>
                 <div>
@@ -944,6 +1161,7 @@ function App() {
                   <div className="search-field">
                     <span aria-hidden="true">⌕</span>
                     <input
+                      ref={animeSearchRef}
                       id="anime-search"
                       type="search"
                       autoComplete="off"
@@ -951,14 +1169,33 @@ function App() {
                       value={animeQuery}
                       onChange={(event) => {
                         setAnimeQuery(event.target.value)
+                        setActiveSuggestionIndex(0)
                         setSelectedAnime(null)
+                        setActiveSubtitleFile(null)
                         setSubtitleFiles([])
                         setFilesStatus('')
                         setShareStatus('')
                         updateAnimeUrl(null)
                       }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'ArrowDown' && animeResults.length > 0) {
+                          event.preventDefault()
+                          setActiveSuggestionIndex((currentIndex) => (currentIndex + 1) % animeResults.length)
+                        } else if (event.key === 'ArrowUp' && animeResults.length > 0) {
+                          event.preventDefault()
+                          setActiveSuggestionIndex((currentIndex) => (currentIndex - 1 + animeResults.length) % animeResults.length)
+                        } else if (event.key === 'Enter' && animeResults[activeSuggestionIndex]) {
+                          event.preventDefault()
+                          handleAnimeSelect(animeResults[activeSuggestionIndex])
+                        } else if (event.key === 'Escape') {
+                          setAnimeQuery('')
+                          setActiveSuggestionIndex(0)
+                        }
+                      }}
                       aria-controls="anime-suggestions"
                       aria-autocomplete="list"
+                      aria-activedescendant={animeResults[activeSuggestionIndex] && !selectedAnime ? `anime-option-${activeSuggestionIndex}` : undefined}
+                      aria-expanded={Boolean(animeQuery.trim() && !selectedAnime)}
                     />
                   </div>
                   <p className="catalog-status">{catalogStatus}</p>
@@ -1008,9 +1245,20 @@ function App() {
 
                   {animeQuery.trim() && !selectedAnime ? (
                     <ul className="anime-suggestions" id="anime-suggestions" role="listbox">
-                      {animeResults.map((entry) => (
+                      {animeResults.map((entry, index) => (
                         <li key={entry.url}>
-                          <button type="button" role="option" onClick={() => handleAnimeSelect(entry)}>
+                          <button
+                            ref={(button) => {
+                              suggestionRefs.current[index] = button
+                            }}
+                            id={`anime-option-${index}`}
+                            className={index === activeSuggestionIndex ? 'is-active' : undefined}
+                            type="button"
+                            role="option"
+                            aria-selected={index === activeSuggestionIndex}
+                            onMouseEnter={() => setActiveSuggestionIndex(index)}
+                            onClick={() => handleAnimeSelect(entry)}
+                          >
                             <span>
                               <strong>{entry.title}</strong>
                               {entry.englishName && entry.englishName !== entry.title ? <small>{entry.englishName}</small> : null}
@@ -1110,13 +1358,17 @@ function App() {
                     <h2 id="reader-title">{sourceName}</h2>
                     <p>{lines.length} subtitle lines</p>
                   </div>
-                  <button className="secondary focus-toggle" type="button" onClick={() => {
-                    setFocusMode((currentMode) => !currentMode)
-                    setFollowCurrent(true)
-                  }}>
-                    {focusMode ? 'Exit focus' : 'Focus view'}
-                  </button>
+                  <div className="reader-actions">
+                    <button className="secondary copy-link" type="button" onClick={() => void copyReaderLink()}>Copy link</button>
+                    <button className="secondary focus-toggle" type="button" onClick={() => {
+                      setFocusMode((currentMode) => !currentMode)
+                      setFollowCurrent(true)
+                    }}>
+                      {focusMode ? 'Exit focus' : 'Focus view'}
+                    </button>
+                  </div>
                 </header>
+                {shareStatus ? <p className="reader-share-status" aria-live="polite">{shareStatus}</p> : null}
 
                 <details className="reader-preferences">
                   <summary>Display settings</summary>
@@ -1135,15 +1387,25 @@ function App() {
                     </label>
                     <label className="reader-setting-control">
                       Furigana opacity
-                      <select value={readerSettings.furiganaOpacity} onChange={(event) => setReaderSettings((currentSettings) => ({
-                        ...currentSettings,
-                        furiganaOpacity: Number(event.target.value),
-                      }))}>
-                        <option value="40">40%</option>
-                        <option value="60">60%</option>
-                        <option value="80">80%</option>
-                        <option value="100">100%</option>
-                      </select>
+                      <span className="number-setting">
+                        <input
+                          aria-label="Furigana opacity percentage"
+                          type="number"
+                          min="0"
+                          max="100"
+                          inputMode="numeric"
+                          value={readerSettings.furiganaOpacity}
+                          onChange={(event) => {
+                            const nextOpacity = event.target.valueAsNumber
+                            if (!Number.isFinite(nextOpacity)) return
+                            setReaderSettings((currentSettings) => ({
+                              ...currentSettings,
+                              furiganaOpacity: Math.min(100, Math.max(0, nextOpacity)),
+                            }))
+                          }}
+                        />
+                        <span aria-hidden="true">%</span>
+                      </span>
                     </label>
                     <button className="secondary" type="button" onClick={() => setReaderSettings((currentSettings) => ({
                       ...currentSettings,
@@ -1182,9 +1444,11 @@ function App() {
                     const isCurrent = line.id === current?.id
                     return (
                       <li className={isCurrent ? 'subtitle-line current' : 'subtitle-line'} key={line.id} ref={isCurrent ? liveRef : undefined}>
-                        <button className="time" type="button" onClick={() => reanchor(line)} aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}>
-                          {formatTime(line.startMs)}
-                        </button>
+                        <div className="line-meta">
+                          <button className="time" type="button" onClick={() => reanchor(line)} aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}>
+                            {formatTime(line.startMs)}
+                          </button>
+                        </div>
                         <p className="line-text">
                           {tokens.map((token) => (
                             token.surface.trim() === '' ? <span key={token.id}>{token.surface}</span> :
@@ -1195,6 +1459,9 @@ function App() {
                             </button>
                           ))}
                         </p>
+                        <button className="line-share" type="button" onClick={() => void shareSubtitleLine(line)} aria-label={`Share subtitle line at ${formatTime(line.startMs)}`}>
+                          <ShareIcon />
+                        </button>
                       </li>
                     )
                   })}
@@ -1203,83 +1470,155 @@ function App() {
             ) : null}
           </div>
 
-          <section className="saved-lookups" aria-labelledby="saved-title">
-            <header className="saved-lookups-header">
-              <div>
-                <span className="section-number">02</span>
-                <h2 id="saved-title">Saved words</h2>
-              </div>
-              <span className="saved-count">{savedLookups.length}</span>
-            </header>
-            <p className="saved-summary">{savedLookups.filter((lookup) => lookup.selected).length} selected for export</p>
+          <aside className="word-sidebar">
+            <section className="saved-lookups" aria-labelledby="history-title">
+              <header className="saved-lookups-header">
+                <div>
+                  <span className="section-number">02</span>
+                  <h2 id="history-title">Lookup history</h2>
+                </div>
+                <span className="saved-count">{lookupHistory.length}</span>
+              </header>
+              <p className="saved-summary">{lookupHistory.filter((lookup) => lookup.selected).length} selected for export</p>
 
-            {savedLookups.length > 0 ? (
-              <div className="selection-actions">
-                <button className="text-button" type="button" onClick={() => setAllLookupsSelected(true)}>Select all</button>
-                <button className="text-button" type="button" onClick={() => setAllLookupsSelected(false)}>Deselect all</button>
-              </div>
-            ) : null}
+              {lookupHistory.length > 0 ? (
+                <div className="selection-actions">
+                  <button className="text-button" type="button" onClick={() => setAllLookupsSelected(true)}>Select all</button>
+                  <button className="text-button" type="button" onClick={() => setAllLookupsSelected(false)}>Deselect all</button>
+                </div>
+              ) : null}
 
-            {savedLookups.length === 0 ? (
-              <div className="empty-lookups">
-                <span aria-hidden="true">あ</span>
-                <p>Your word list is empty.</p>
-                <small>Tap a word in the subtitles to save it here.</small>
-              </div>
-            ) : (
-              <ol className="saved-list">
-                {savedLookups.map((lookup) => (
-                  <li className="saved-item" key={lookup.id}>
-                    <label className="saved-check">
-                      <input checked={lookup.selected} type="checkbox" onChange={() => toggleSavedLookup(lookup.id)} />
-                      <span>
-                        <strong>{lookup.surface}</strong>
-                        {lookup.reading ? <span className="saved-reading">{lookup.reading}</span> : null}
-                      </span>
-                    </label>
-                    <p>{lookup.meaning}</p>
-                    <blockquote>{lookup.sentence}</blockquote>
-                    <small>{formatTime(lookup.startMs)}–{formatTime(lookup.endMs)}</small>
-                  </li>
-                ))}
-              </ol>
-            )}
+              {lookupHistory.length === 0 ? (
+                <div className="empty-lookups compact-empty">
+                  <span aria-hidden="true">あ</span>
+                  <p>No lookups yet.</p>
+                  <small>Words you tap appear here automatically.</small>
+                </div>
+              ) : (
+                <ol className="saved-list">
+                  {lookupHistory.map((lookup) => (
+                    <li className="saved-item" key={lookup.id}>
+                      <div className="saved-item-top">
+                        <label className="saved-check">
+                          <input checked={lookup.selected} type="checkbox" onChange={() => toggleSavedLookup(lookup.id)} />
+                          <span>
+                            <strong>{lookup.surface}</strong>
+                            {lookup.reading ? <span className="saved-reading">{lookup.reading}</span> : null}
+                          </span>
+                        </label>
+                        <button
+                          className={isFavorite(lookup) ? 'star-button is-saved' : 'star-button'}
+                          type="button"
+                          aria-label={isFavorite(lookup) ? `Remove ${lookup.surface} from saved words` : `Save ${lookup.surface}`}
+                          aria-pressed={isFavorite(lookup)}
+                          onClick={() => toggleFavorite(lookup)}
+                        >
+                          <StarIcon filled={isFavorite(lookup)} />
+                        </button>
+                      </div>
+                      <p>{lookup.meaning}</p>
+                      <blockquote>{lookup.sentence}</blockquote>
+                      <small>{formatTime(lookup.startMs)}–{formatTime(lookup.endMs)}</small>
+                    </li>
+                  ))}
+                </ol>
+              )}
 
-            <div className="saved-actions">
-              <div className="export-split">
-                <button type="button" onClick={exportSelectedLookups} disabled={savedLookups.every((lookup) => !lookup.selected)}>
-                  Export {exportFormat.toUpperCase()}
-                </button>
-                <select aria-label="Export format" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}>
-                  <option value="tsv">TSV · Anki</option>
-                  <option value="csv">CSV</option>
-                  <option value="txt">TXT</option>
-                </select>
+              <div className="saved-actions">
+                <div className="export-split">
+                  <button type="button" onClick={exportSelectedLookups} disabled={lookupHistory.every((lookup) => !lookup.selected)}>
+                    Export {exportFormat.toUpperCase()}
+                  </button>
+                  <select aria-label="Lookup history export format" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}>
+                    <option value="tsv">TSV · Anki</option>
+                    <option value="csv">CSV</option>
+                    <option value="txt">TXT</option>
+                  </select>
+                </div>
+                <button className="text-button danger-text" type="button" onClick={() => setClearConfirmOpen(true)} disabled={lookupHistory.length === 0}>Clear history</button>
               </div>
-              <button className="text-button danger-text" type="button" onClick={() => setClearConfirmOpen(true)} disabled={savedLookups.length === 0}>Clear list</button>
-            </div>
-          </section>
+            </section>
+
+            <section className="saved-lookups favorite-words" aria-labelledby="favorites-title">
+              <header className="saved-lookups-header">
+                <div>
+                  <span className="section-number">03</span>
+                  <h2 id="favorites-title">Saved words</h2>
+                </div>
+                <span className="saved-count">{favoriteWords.length}</span>
+              </header>
+              <p className="saved-summary">Only words you deliberately star.</p>
+
+              {favoriteWords.length === 0 ? (
+                <div className="empty-lookups compact-empty">
+                  <StarIcon />
+                  <p>No saved words yet.</p>
+                  <small>Use the star in a lookup or in your history.</small>
+                </div>
+              ) : (
+                <ol className="saved-list favorite-list">
+                  {favoriteWords.map((lookup) => (
+                    <li className="saved-item" key={lookup.id}>
+                      <div className="saved-item-top">
+                        <span className="saved-word">
+                          <strong>{lookup.surface}</strong>
+                          {lookup.reading ? <span className="saved-reading">{lookup.reading}</span> : null}
+                        </span>
+                        <button className="star-button is-saved" type="button" aria-label={`Remove ${lookup.surface} from saved words`} onClick={() => toggleFavorite(lookup)}>
+                          <StarIcon filled />
+                        </button>
+                      </div>
+                      <p>{lookup.meaning}</p>
+                      <blockquote>{lookup.sentence}</blockquote>
+                    </li>
+                  ))}
+                </ol>
+              )}
+
+              <div className="saved-actions">
+                <div className="export-split">
+                  <button type="button" onClick={() => exportLookups(favoriteWords, favoriteExportFormat, 'subtitle-saved-words')} disabled={favoriteWords.length === 0}>
+                    Export {favoriteExportFormat.toUpperCase()}
+                  </button>
+                  <select aria-label="Saved words export format" value={favoriteExportFormat} onChange={(event) => setFavoriteExportFormat(event.target.value as ExportFormat)}>
+                    <option value="tsv">TSV · Anki</option>
+                    <option value="csv">CSV</option>
+                    <option value="txt">TXT</option>
+                  </select>
+                </div>
+              </div>
+            </section>
+          </aside>
         </div>
       </div>
 
-      {selectedToken ? (
+      {selectedLookup ? (
         <aside className="lookup" role="dialog" aria-label="Dictionary lookup">
-          <button className="close" type="button" onClick={() => setSelectedToken(null)} aria-label="Close dictionary lookup">Close</button>
+          <button className="close" type="button" onClick={() => setSelectedLookup(null)} aria-label="Close dictionary lookup">Close</button>
           <p className="eyebrow">Lookup</p>
-          <h2>{selectedToken.surface}</h2>
-          {selectedToken.entry ? (
+          <h2>{selectedLookup.token.surface}</h2>
+          {selectedLookup.token.entry ? (
             <>
-              <p className="reading">{selectedToken.reading ?? selectedToken.entry.reading}</p>
-              <p>{selectedToken.entry.meaning}</p>
+              <p className="reading">{selectedLookup.token.reading ?? selectedLookup.token.entry.reading}</p>
+              <p>{selectedLookup.token.entry.meaning}</p>
             </>
-          ) : selectedToken.reading ? (
+          ) : selectedLookup.token.reading ? (
             <>
-              <p className="reading">{selectedToken.reading}</p>
+              <p className="reading">{selectedLookup.token.reading}</p>
               <p>No dictionary match found.</p>
             </>
           ) : (
             <p>No dictionary match found.</p>
           )}
+          <button
+            className={isFavorite(selectedLookup.lookup) ? 'lookup-save is-saved' : 'lookup-save'}
+            type="button"
+            aria-pressed={isFavorite(selectedLookup.lookup)}
+            onClick={() => toggleFavorite(selectedLookup.lookup)}
+          >
+            <StarIcon filled={isFavorite(selectedLookup.lookup)} />
+            {isFavorite(selectedLookup.lookup) ? 'Saved word' : 'Save word'}
+          </button>
         </aside>
       ) : null}
 
@@ -1287,8 +1626,8 @@ function App() {
         <div className="modal-backdrop">
           <section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="clear-title" aria-describedby="clear-description">
             <p className="eyebrow">Confirm action</p>
-            <h2 id="clear-title">Clear saved words?</h2>
-            <p id="clear-description">This removes all {savedLookups.length} saved {savedLookups.length === 1 ? 'lookup' : 'lookups'} from this device.</p>
+            <h2 id="clear-title">Clear lookup history?</h2>
+            <p id="clear-description">This removes all {lookupHistory.length} history {lookupHistory.length === 1 ? 'entry' : 'entries'} from this device. Your starred words stay saved.</p>
             <div>
               <button className="secondary" type="button" onClick={() => setClearConfirmOpen(false)}>Cancel</button>
               <button className="danger-button" type="button" onClick={confirmClearSavedLookups}>Clear list</button>
