@@ -608,6 +608,30 @@ function SearchIcon() {
   )
 }
 
+function PlayIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+      <path d="M8 5.5v13l10-6.5z" fill="currentColor" />
+    </svg>
+  )
+}
+
+function PauseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+      <path d="M7 5.5h3.5v13H7zm6.5 0H17v13h-3.5z" fill="currentColor" />
+    </svg>
+  )
+}
+
+function AutoScrollIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+      <path d="M12 4v13m-4-4 4 4 4-4M6 20h12" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
 function App() {
   const [sourceName, setSourceName] = useState('')
   const [url, setUrl] = useState('')
@@ -719,7 +743,7 @@ function App() {
 
   useEffect(() => {
     if (tracker.status === 'running' && current && followCurrent) {
-      scrollCurrentLine(focusMode ? 'start' : 'center')
+      scrollCurrentLine('center')
     }
     // The scroll helper intentionally resolves the current DOM refs when invoked.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -734,11 +758,11 @@ function App() {
       if (event.key === 'Escape') setFocusMode(false)
     }
     const handleResize = () => {
-      if (followCurrent) window.requestAnimationFrame(() => scrollCurrentLine('start', false))
+      if (followCurrent) window.requestAnimationFrame(() => scrollCurrentLine('center', false))
     }
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('resize', handleResize)
-    window.requestAnimationFrame(() => scrollCurrentLine('start', false))
+    window.requestAnimationFrame(() => scrollCurrentLine('center', false))
 
     return () => {
       document.documentElement.classList.remove('reader-focus-active')
@@ -875,7 +899,7 @@ function App() {
   useEffect(() => {
     if (pendingLineRef.current === null || !current) return
     pendingLineRef.current = null
-    window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center', false))
+    window.requestAnimationFrame(() => scrollCurrentLine('center', false))
     // The scroll helper intentionally resolves the current DOM refs when invoked.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, focusMode])
@@ -1102,7 +1126,7 @@ function App() {
   function jumpToCurrent() {
     setFollowCurrent(true)
     setViewedTimestamp(playingTimestamp)
-    window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center'))
+    window.requestAnimationFrame(() => scrollCurrentLine('center'))
   }
 
   function buildShareUrl(lineMs?: number) {
@@ -1225,7 +1249,7 @@ function App() {
     setFollowCurrent(true)
     setViewedTimestamp(line.startMs)
     setTracker({ status: 'running', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
-    window.requestAnimationFrame(() => scrollLineIntoView(line, focusMode ? 'start' : 'center'))
+    window.requestAnimationFrame(() => scrollLineIntoView(line, 'center'))
   }
 
   function jumpToLine(line: SubtitleLine) {
@@ -1249,7 +1273,7 @@ function App() {
     setFollowCurrent(false)
     setViewedTimestamp(nearestLine.startMs)
     setHighlightedLineId(nearestLine.id)
-    scrollLineIntoView(nearestLine, focusMode ? 'start' : 'center')
+    scrollLineIntoView(nearestLine, 'center')
   }
 
   function setPlayheadTimestamp(timestamp: number, revealLine = false) {
@@ -1261,7 +1285,7 @@ function App() {
     setFollowCurrent(true)
     setViewedTimestamp(nearestLine.startMs)
     setHighlightedLineId(nearestLine.id)
-    scrollLineIntoView(nearestLine, focusMode ? 'start' : 'center')
+    scrollLineIntoView(nearestLine, 'center')
   }
 
   function commitSeekTime() {
@@ -1859,7 +1883,7 @@ function App() {
                   ) : null}
 
                   <button className="current-subtitle-preview" type="button" onClick={jumpToCurrent}>
-                    <span><i aria-hidden="true" />Now playing <time>{formatTime(playingTimestamp)}</time></span>
+                    <span><i aria-hidden="true" />Current subtitle</span>
                     <strong>{current?.plainText || 'Waiting for the first subtitle…'}</strong>
                   </button>
 
@@ -1925,18 +1949,28 @@ function App() {
                 </div>
 
                 <div className="controls">
-                  <button type="button" onClick={togglePlayback}>{tracker.status === 'running' ? 'Pause' : tracker.status === 'paused' ? 'Resume' : 'Start clock'}</button>
-                  <button className="text-button" type="button" onClick={jumpToCurrent}>Jump to current</button>
-                  {focusMode ? (
-                    <button
-                      className="text-button follow-toggle"
-                      type="button"
-                      aria-pressed={followCurrent}
-                      onClick={() => setFollowCurrent((isFollowing) => !isFollowing)}
-                    >
-                      {followCurrent ? 'Following current' : 'Browse history'}
-                    </button>
-                  ) : null}
+                  <button
+                    className="playback-toggle"
+                    type="button"
+                    onClick={togglePlayback}
+                    aria-label={tracker.status === 'running' ? 'Pause playback clock' : 'Start playback clock'}
+                    title={tracker.status === 'running' ? 'Pause' : 'Play'}
+                  >
+                    {tracker.status === 'running' ? <PauseIcon /> : <PlayIcon />}
+                  </button>
+                  <button
+                    className={followCurrent ? 'autoscroll-toggle is-on' : 'autoscroll-toggle'}
+                    type="button"
+                    aria-pressed={followCurrent}
+                    onClick={() => {
+                      if (followCurrent) setFollowCurrent(false)
+                      else jumpToCurrent()
+                    }}
+                  >
+                    <AutoScrollIcon />
+                    <span>Autoscroll</span>
+                    <small>{followCurrent ? 'On' : 'Off'}</small>
+                  </button>
                   <span className="clock"><i className={tracker.status === 'running' ? 'is-live' : ''} aria-hidden="true" />{formatTime(virtualTime(tracker, tick))}</span>
                 </div>
 
@@ -1949,6 +1983,7 @@ function App() {
                   ].filter(Boolean).join(' ')}
                   style={{
                     '--subtitle-font-size': `${readerSettings.subtitleFontSize}px`,
+                    '--transcript-font-size': `${Math.max(16, readerSettings.subtitleFontSize - 5)}px`,
                     '--furigana-opacity': readerSettings.furiganaOpacity / 100,
                   } as CSSProperties}
                   onScroll={updateViewedPosition}

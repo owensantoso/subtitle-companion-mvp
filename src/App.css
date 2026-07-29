@@ -1449,6 +1449,40 @@ button:disabled {
   background: var(--paper);
 }
 
+.playback-toggle {
+  display: grid;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+}
+
+.autoscroll-toggle {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 7px;
+  border-color: var(--line-strong);
+  padding-inline: 11px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.7rem;
+}
+
+.autoscroll-toggle small {
+  color: inherit;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.autoscroll-toggle.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .clock {
   margin-left: auto;
   color: var(--muted);
@@ -1940,8 +1974,7 @@ body.reader-focus-active {
   .reader.is-focused .reader-share-status,
   .reader.is-focused .reader-preferences,
   .reader.is-focused .subtitle-search,
-  .reader.is-focused .episode-navigation,
-  .reader.is-focused .follow-toggle {
+  .reader.is-focused .episode-navigation {
     display: none;
   }
 
@@ -1978,7 +2011,7 @@ body.reader-focus-active {
 
   .reader.is-focused .current-subtitle-preview {
     display: grid;
-    min-height: 52px;
+    min-height: 68px;
     gap: 4px;
     border: 0;
     border-bottom: 1px solid var(--line);
@@ -2017,8 +2050,8 @@ body.reader-focus-active {
     display: -webkit-box;
     overflow: hidden;
     font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
-    font-size: 0.82rem;
-    line-height: 1.45;
+    font-size: var(--subtitle-font-size, 22px);
+    line-height: 1.4;
     text-overflow: ellipsis;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
@@ -2049,12 +2082,25 @@ body.reader-focus-active {
     min-height: 40px;
   }
 
+  .reader.is-focused .playback-toggle {
+    width: 44px;
+    min-height: 44px;
+  }
+
+  .reader.is-focused .autoscroll-toggle {
+    min-height: 44px;
+  }
+
   .reader.is-focused .controls .clock {
     display: none;
   }
 
   .reader.is-focused .subtitle-line {
     padding-block: 16px;
+  }
+
+  .reader.is-focused .line-text {
+    font-size: var(--transcript-font-size, 17px);
   }
 
   .reader.is-focused .subtitle-list {
@@ -2080,7 +2126,7 @@ body.reader-focus-active {
   }
 
   .reader-focus-active .lookup {
-    bottom: calc(168px + env(safe-area-inset-bottom));
+    bottom: calc(184px + env(safe-area-inset-bottom));
     max-height: min(34dvh, 300px);
     padding: 14px;
   }
