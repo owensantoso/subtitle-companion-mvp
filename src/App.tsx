@@ -92,10 +92,13 @@ const recentActivityKey = 'subtitle-companion:recent-activity:v1'
 const recentActivityLimit = 6
 
 type ExportFormat = 'tsv' | 'csv' | 'txt'
+type SubtitleDensity = 'compact' | 'comfortable'
 type ReaderSettings = {
   furigana: boolean
   furiganaOpacity: number
   subtitleFontSize: number
+  dimInactive: boolean
+  density: SubtitleDensity
 }
 
 const seedDictionary: DictionaryEntry[] = [
@@ -259,6 +262,65 @@ function katakanaToHiragana(text?: string) {
   return text.replace(/[\u30a1-\u30f6]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0x60))
 }
 
+const romajiSyllables: Record<string, string> = {
+  kya: 'きゃ', kyu: 'きゅ', kyo: 'きょ', sha: 'しゃ', shu: 'しゅ', sho: 'しょ',
+  cha: 'ちゃ', chu: 'ちゅ', cho: 'ちょ', nya: 'にゃ', nyu: 'にゅ', nyo: 'にょ',
+  hya: 'ひゃ', hyu: 'ひゅ', hyo: 'ひょ', mya: 'みゃ', myu: 'みゅ', myo: 'みょ',
+  rya: 'りゃ', ryu: 'りゅ', ryo: 'りょ', gya: 'ぎゃ', gyu: 'ぎゅ', gyo: 'ぎょ',
+  ja: 'じゃ', ju: 'じゅ', jo: 'じょ', bya: 'びゃ', byu: 'びゅ', byo: 'びょ',
+  pya: 'ぴゃ', pyu: 'ぴゅ', pyo: 'ぴょ', shi: 'し', chi: 'ち', tsu: 'つ',
+  fu: 'ふ', ji: 'じ', a: 'あ', i: 'い', u: 'う', e: 'え', o: 'お',
+  ka: 'か', ki: 'き', ku: 'く', ke: 'け', ko: 'こ', sa: 'さ', su: 'す',
+  se: 'せ', so: 'そ', ta: 'た', te: 'て', to: 'と', na: 'な', ni: 'に',
+  nu: 'ぬ', ne: 'ね', no: 'の', ha: 'は', hi: 'ひ', he: 'へ', ho: 'ほ',
+  ma: 'ま', mi: 'み', mu: 'む', me: 'め', mo: 'も', ya: 'や', yu: 'ゆ',
+  yo: 'よ', ra: 'ら', ri: 'り', ru: 'る', re: 'れ', ro: 'ろ', wa: 'わ',
+  wo: 'を', ga: 'が', gi: 'ぎ', gu: 'ぐ', ge: 'げ', go: 'ご', za: 'ざ',
+  zu: 'ず', ze: 'ぜ', zo: 'ぞ', da: 'だ', de: 'で', do: 'ど', ba: 'ば',
+  bi: 'び', bu: 'ぶ', be: 'べ', bo: 'ぼ', pa: 'ぱ', pi: 'ぴ', pu: 'ぷ',
+  pe: 'ぺ', po: 'ぽ',
+}
+
+function romajiToHiragana(value: string) {
+  const input = value.normalize('NFKC').toLowerCase()
+  let output = ''
+  let index = 0
+
+  while (index < input.length) {
+    const current = input[index]
+    const next = input[index + 1]
+    if (current === next && /[bcdfghjkmprstz]/.test(current)) {
+      output += 'っ'
+      index += 1
+      continue
+    }
+    if (current === 'n' && (!next || next === "'" || !/[aeiouy]/.test(next))) {
+      output += 'ん'
+      index += next === "'" ? 2 : 1
+      continue
+    }
+
+    const triple = romajiSyllables[input.slice(index, index + 3)]
+    const pair = romajiSyllables[input.slice(index, index + 2)]
+    const single = romajiSyllables[current]
+    if (triple) {
+      output += triple
+      index += 3
+    } else if (pair) {
+      output += pair
+      index += 2
+    } else if (single) {
+      output += single
+      index += 1
+    } else {
+      output += current
+      index += 1
+    }
+  }
+
+  return output
+}
+
 function lookupToken(surface: string, basicForm: string | undefined, buckets: DictionaryBuckets) {
   return lookupSurface(surface, buckets) ?? (basicForm && basicForm !== '*' ? lookupSurface(basicForm, buckets) : undefined)
 }
@@ -392,6 +454,8 @@ function loadReaderSettings(): ReaderSettings {
     furigana: true,
     furiganaOpacity: 100,
     subtitleFontSize: 22,
+    dimInactive: true,
+    density: 'compact',
   }
 
   try {
@@ -411,6 +475,8 @@ function loadReaderSettings(): ReaderSettings {
         : [18, 22, 26, 30].includes(Number(parsed.subtitleFontSize))
         ? Number(parsed.subtitleFontSize)
         : [18, 22, 26, 30].includes(legacyFontSize) ? legacyFontSize : defaults.subtitleFontSize,
+      dimInactive: typeof parsed.dimInactive === 'boolean' ? parsed.dimInactive : defaults.dimInactive,
+      density: parsed.density === 'comfortable' || parsed.density === 'compact' ? parsed.density : defaults.density,
     }
   } catch {
     return defaults
@@ -431,6 +497,57 @@ function loadRecentActivity(): RecentActivity {
 
 function animeStateId(entry: AnimeCatalogEntry) {
   return new URL(entry.url).pathname.replace(/^\/+/, '')
+}
+
+type EpisodeMarker = {
+  episode: number
+  season?: number
+  prefix: string
+}
+
+function normalizeEpisodePrefix(value: string) {
+  return value.normalize('NFKC').toLowerCase().replace(/[^\p{Letter}\p{Number}]+/gu, '')
+}
+
+function episodeMarker(filename: string): EpisodeMarker | null {
+  const patterns = [
+    { pattern: /S(\d{1,2})E(\d{1,3})/i, seasonIndex: 1, episodeIndex: 2 },
+    { pattern: /\b(?:ep|episode)[ ._-]?(\d{1,3})\b/i, episodeIndex: 1 },
+    { pattern: /\s-\s(\d{1,3})(?=\D|$)/, episodeIndex: 1 },
+    { pattern: /\[(\d{1,3})(?:v\d+)?\]/i, episodeIndex: 1 },
+  ]
+
+  for (const candidate of patterns) {
+    const match = candidate.pattern.exec(filename)
+    if (!match || match.index === undefined) continue
+    return {
+      episode: Number(match[candidate.episodeIndex]),
+      season: candidate.seasonIndex ? Number(match[candidate.seasonIndex]) : undefined,
+      prefix: normalizeEpisodePrefix(filename.slice(0, match.index)),
+    }
+  }
+
+  return null
+}
+
+function adjacentSubtitleFile(files: SubtitleFile[], currentFile: SubtitleFile | null, direction: -1 | 1) {
+  if (!currentFile) return null
+  const marker = episodeMarker(currentFile.name)
+  if (marker) {
+    const targetEpisode = marker.episode + direction
+    if (targetEpisode < 0) return null
+    const exact = files.find((file) => {
+      const candidate = episodeMarker(file.name)
+      return candidate
+        && candidate.episode === targetEpisode
+        && candidate.season === marker.season
+        && candidate.prefix === marker.prefix
+    })
+    return exact ?? null
+  }
+
+  const currentIndex = files.findIndex((file) => file.url === currentFile.url)
+  return currentIndex >= 0 ? files[currentIndex + direction] ?? null : null
 }
 
 function updateAnimeUrl(entry: AnimeCatalogEntry | null) {
@@ -473,6 +590,15 @@ function ShareIcon() {
   )
 }
 
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+      <circle cx="10.5" cy="10.5" r="5.75" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m15 15 4.25 4.25" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
 function App() {
   const [sourceName, setSourceName] = useState('')
   const [url, setUrl] = useState('')
@@ -506,10 +632,13 @@ function App() {
   const [focusMode, setFocusMode] = useState(false)
   const [followCurrent, setFollowCurrent] = useState(true)
   const [importOpen, setImportOpen] = useState(true)
+  const [subtitleQuery, setSubtitleQuery] = useState('')
+  const [highlightedLineId, setHighlightedLineId] = useState('')
   const liveRef = useRef<HTMLLIElement | null>(null)
   const subtitleListRef = useRef<HTMLOListElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const animeSearchRef = useRef<HTMLInputElement | null>(null)
+  const readerPreferencesRef = useRef<HTMLDetailsElement | null>(null)
   const suggestionRefs = useRef<(HTMLButtonElement | null)[]>([])
   const deepLinkFileHandledRef = useRef(false)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
@@ -518,6 +647,24 @@ function App() {
   const current = currentSubtitle(lines, tracker, tick)
   const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets, tokenizer) })), [dictionaryBuckets, lines, tokenizer])
   const animeResults = useMemo(() => searchAnimeCatalog(animeCatalog, animeQuery), [animeCatalog, animeQuery])
+  const subtitleSearchResults = useMemo(() => {
+    const query = subtitleQuery.normalize('NFKC').trim().toLowerCase()
+    if (!query) return []
+    const hiraganaQuery = romajiToHiragana(query)
+    return tokenizedLines.filter(({ line, tokens }) => {
+      const japaneseAndReading = [
+        line.plainText,
+        ...tokens.flatMap((token) => [token.surface, token.reading ?? '', token.entry?.reading ?? '']),
+      ].join(' ').normalize('NFKC').toLowerCase()
+      const meanings = tokens.map((token) => token.entry?.meaning ?? '').join(' ').toLowerCase()
+      return japaneseAndReading.includes(query)
+        || (hiraganaQuery !== query && japaneseAndReading.includes(hiraganaQuery))
+        || meanings.includes(query)
+    })
+  }, [subtitleQuery, tokenizedLines])
+  const previousEpisodeFile = useMemo(() => adjacentSubtitleFile(subtitleFiles, activeSubtitleFile, -1), [activeSubtitleFile, subtitleFiles])
+  const nextEpisodeFile = useMemo(() => adjacentSubtitleFile(subtitleFiles, activeSubtitleFile, 1), [activeSubtitleFile, subtitleFiles])
+  const timelineEnd = lines.at(-1)?.endMs ?? 0
 
   useEffect(() => {
     suggestionRefs.current[activeSuggestionIndex]?.scrollIntoView({ block: 'nearest' })
@@ -769,6 +916,8 @@ function App() {
     setSourceName(name)
     setError('')
     setSelectedLookup(null)
+    setSubtitleQuery('')
+    setHighlightedLineId('')
     setFollowCurrent(true)
     setTracker({ status: 'idle', anchorSubtitleMs, anchorClockMs: performance.now() })
     setImportOpen(false)
@@ -1015,6 +1164,35 @@ function App() {
     window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center'))
   }
 
+  function jumpToLine(line: SubtitleLine) {
+    pendingLineRef.current = line.startMs
+    setFollowCurrent(true)
+    setHighlightedLineId(line.id)
+    setTracker({ status: 'paused', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
+  }
+
+  function scrubTo(timestamp: number) {
+    if (lines.length === 0) return
+    const nearestLine = lines.reduce((nearest, line) => (
+      Math.abs(line.startMs - timestamp) < Math.abs(nearest.startMs - timestamp) ? line : nearest
+    ), lines[0])
+    pendingLineRef.current = nearestLine.startMs
+    setFollowCurrent(true)
+    setHighlightedLineId(nearestLine.id)
+    setTracker({ status: 'paused', anchorSubtitleMs: timestamp, anchorClockMs: performance.now() })
+  }
+
+  function lookupSourceLine(lookup: SavedLookup) {
+    if (lookup.sourceName !== sourceName) return undefined
+    return lines.find((line) => line.startMs === lookup.startMs && line.plainText === lookup.sentence)
+      ?? lines.find((line) => line.startMs === lookup.startMs)
+  }
+
+  function jumpToLookup(lookup: SavedLookup) {
+    const line = lookupSourceLine(lookup)
+    if (line) jumpToLine(line)
+  }
+
   function saveLookup(token: Token, line: SubtitleLine) {
     const meaning = token.entry?.meaning ?? 'No dictionary match found.'
     const reading = token.reading ?? token.entry?.reading ?? ''
@@ -1159,7 +1337,7 @@ function App() {
                 <div className="anime-search">
                   <label htmlFor="anime-search">Search anime</label>
                   <div className="search-field">
-                    <span aria-hidden="true">⌕</span>
+                    <span aria-hidden="true"><SearchIcon /></span>
                     <input
                       ref={animeSearchRef}
                       id="anime-search"
@@ -1361,7 +1539,11 @@ function App() {
                   <div className="reader-actions">
                     <button className="secondary copy-link" type="button" onClick={() => void copyReaderLink()}>Copy link</button>
                     <button className="secondary focus-toggle" type="button" onClick={() => {
-                      setFocusMode((currentMode) => !currentMode)
+                      setFocusMode((currentMode) => {
+                        const nextMode = !currentMode
+                        if (nextMode && readerPreferencesRef.current) readerPreferencesRef.current.open = false
+                        return nextMode
+                      })
                       setFollowCurrent(true)
                     }}>
                       {focusMode ? 'Exit focus' : 'Focus view'}
@@ -1370,7 +1552,7 @@ function App() {
                 </header>
                 {shareStatus ? <p className="reader-share-status" aria-live="polite">{shareStatus}</p> : null}
 
-                <details className="reader-preferences">
+                <details ref={readerPreferencesRef} className="reader-preferences">
                   <summary>Display settings</summary>
                   <div className="reader-settings">
                     <label className="reader-setting-control">
@@ -1413,8 +1595,99 @@ function App() {
                     }))}>
                       Furigana {readerSettings.furigana ? 'on' : 'off'}
                     </button>
+                    <button className="secondary" type="button" aria-pressed={readerSettings.dimInactive} onClick={() => setReaderSettings((currentSettings) => ({
+                      ...currentSettings,
+                      dimInactive: !currentSettings.dimInactive,
+                    }))}>
+                      Dim other lines {readerSettings.dimInactive ? 'on' : 'off'}
+                    </button>
+                    <label className="reader-setting-control">
+                      Spacing
+                      <select value={readerSettings.density} onChange={(event) => setReaderSettings((currentSettings) => ({
+                        ...currentSettings,
+                        density: event.target.value as SubtitleDensity,
+                      }))}>
+                        <option value="compact">Compact</option>
+                        <option value="comfortable">Comfortable</option>
+                      </select>
+                    </label>
                   </div>
                 </details>
+
+                <div className="reader-tools">
+                  <div className="subtitle-search">
+                    <label htmlFor="subtitle-search">Search these subtitles</label>
+                    <div className="subtitle-search-field">
+                      <SearchIcon />
+                      <input
+                        id="subtitle-search"
+                        type="search"
+                        autoComplete="off"
+                        placeholder="Japanese, romaji, or English"
+                        value={subtitleQuery}
+                        onChange={(event) => setSubtitleQuery(event.target.value)}
+                      />
+                    </div>
+                    {subtitleQuery.trim() ? (
+                      <div className="subtitle-search-results" aria-live="polite">
+                        <p>{subtitleSearchResults.length} {subtitleSearchResults.length === 1 ? 'match' : 'matches'}</p>
+                        {subtitleSearchResults.length > 0 ? (
+                          <ol>
+                            {subtitleSearchResults.slice(0, 12).map(({ line }) => (
+                              <li key={line.id}>
+                                <button type="button" onClick={() => jumpToLine(line)}>
+                                  <time>{formatTime(line.startMs)}</time>
+                                  <span>{line.plainText}</span>
+                                </button>
+                              </li>
+                            ))}
+                          </ol>
+                        ) : (
+                          <small>Try Japanese text, a reading such as “touzen”, or an English meaning such as “natural”.</small>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {activeSubtitleFile ? (
+                    <nav className="episode-navigation" aria-label="Episode subtitles">
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={!previousEpisodeFile || Boolean(loadingFileUrl)}
+                        title={previousEpisodeFile?.name}
+                        onClick={() => previousEpisodeFile && void handleAjattFile(previousEpisodeFile)}
+                      >
+                        Previous episode
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={!nextEpisodeFile || Boolean(loadingFileUrl)}
+                        title={nextEpisodeFile?.name}
+                        onClick={() => nextEpisodeFile && void handleAjattFile(nextEpisodeFile)}
+                      >
+                        Next episode
+                      </button>
+                    </nav>
+                  ) : null}
+
+                  <label className="timeline-control">
+                    <span>
+                      <strong>Timeline</strong>
+                      <output>{formatTime(virtualTime(tracker, tick))} / {formatTime(timelineEnd)}</output>
+                    </span>
+                    <input
+                      type="range"
+                      min={lines[0]?.startMs ?? 0}
+                      max={timelineEnd}
+                      step="100"
+                      value={Math.min(timelineEnd, Math.max(lines[0]?.startMs ?? 0, virtualTime(tracker, tick)))}
+                      onChange={(event) => scrubTo(Number(event.target.value))}
+                      aria-label="Subtitle timeline"
+                    />
+                  </label>
+                </div>
 
                 <div className="controls">
                   <button type="button" onClick={togglePlayback}>{tracker.status === 'running' ? 'Pause' : tracker.status === 'paused' ? 'Resume' : 'Start clock'}</button>
@@ -1434,7 +1707,11 @@ function App() {
 
                 <ol
                   ref={subtitleListRef}
-                  className="subtitle-list"
+                  className={[
+                    'subtitle-list',
+                    readerSettings.dimInactive ? 'dim-inactive' : '',
+                    `density-${readerSettings.density}`,
+                  ].filter(Boolean).join(' ')}
                   style={{
                     '--subtitle-font-size': `${readerSettings.subtitleFontSize}px`,
                     '--furigana-opacity': readerSettings.furiganaOpacity / 100,
@@ -1443,7 +1720,15 @@ function App() {
                   {tokenizedLines.map(({ line, tokens }) => {
                     const isCurrent = line.id === current?.id
                     return (
-                      <li className={isCurrent ? 'subtitle-line current' : 'subtitle-line'} key={line.id} ref={isCurrent ? liveRef : undefined}>
+                      <li
+                        className={[
+                          'subtitle-line',
+                          isCurrent ? 'current' : '',
+                          line.id === highlightedLineId ? 'jump-highlight' : '',
+                        ].filter(Boolean).join(' ')}
+                        key={line.id}
+                        ref={isCurrent ? liveRef : undefined}
+                      >
                         <div className="line-meta">
                           <button className="time" type="button" onClick={() => reanchor(line)} aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}>
                             {formatTime(line.startMs)}
@@ -1517,7 +1802,15 @@ function App() {
                         </button>
                       </div>
                       <p>{lookup.meaning}</p>
-                      <blockquote>{lookup.sentence}</blockquote>
+                      <button
+                        className="lookup-sentence"
+                        type="button"
+                        disabled={!lookupSourceLine(lookup)}
+                        onClick={() => jumpToLookup(lookup)}
+                        title={lookupSourceLine(lookup) ? 'Jump to this subtitle line' : 'Open the source subtitle to jump to this line'}
+                      >
+                        {lookup.sentence}
+                      </button>
                       <small>{formatTime(lookup.startMs)}–{formatTime(lookup.endMs)}</small>
                     </li>
                   ))}
@@ -1569,7 +1862,15 @@ function App() {
                         </button>
                       </div>
                       <p>{lookup.meaning}</p>
-                      <blockquote>{lookup.sentence}</blockquote>
+                      <button
+                        className="lookup-sentence"
+                        type="button"
+                        disabled={!lookupSourceLine(lookup)}
+                        onClick={() => jumpToLookup(lookup)}
+                        title={lookupSourceLine(lookup) ? 'Jump to this subtitle line' : 'Open the source subtitle to jump to this line'}
+                      >
+                        {lookup.sentence}
+                      </button>
                     </li>
                   ))}
                 </ol>

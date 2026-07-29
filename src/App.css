@@ -257,17 +257,19 @@ button:active,
 .search-field > span {
   position: absolute;
   top: 50%;
-  left: 14px;
+  left: 16px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
   color: var(--muted);
-  font-size: 1.3rem;
-  line-height: 1;
-  transform: translateY(-52%);
+  transform: translateY(-50%);
   pointer-events: none;
 }
 
-.search-field input {
+.search-field input[type="search"] {
   min-height: 52px;
-  padding-left: 42px;
+  padding-left: 50px;
   font-size: 1rem;
 }
 
@@ -902,7 +904,7 @@ button:disabled {
 }
 
 .saved-item p,
-.saved-item blockquote,
+.saved-item .lookup-sentence,
 .saved-item small {
   margin: 0;
 }
@@ -912,10 +914,28 @@ button:disabled {
   font-size: 0.82rem;
 }
 
-.saved-item blockquote {
+.lookup-sentence {
+  min-height: 44px;
+  border: 0;
+  padding: 5px 0;
   color: var(--muted);
+  background: transparent;
   font-size: 0.75rem;
   line-height: 1.5;
+  text-align: left;
+}
+
+.lookup-sentence:hover,
+.lookup-sentence:focus-visible {
+  border-color: transparent;
+  color: var(--accent);
+  background: transparent;
+}
+
+.lookup-sentence:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
 }
 
 .saved-item small {
@@ -1035,6 +1055,7 @@ button:disabled {
 .reader-settings {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -1119,6 +1140,155 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.reader-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 18px;
+  background: #111411;
+}
+
+.subtitle-search {
+  position: relative;
+  min-width: 0;
+}
+
+.subtitle-search > label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.subtitle-search-field {
+  position: relative;
+}
+
+.subtitle-search-field > svg {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  color: var(--muted);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.subtitle-search-field input {
+  width: 100%;
+  min-height: 44px;
+  padding-left: 42px;
+}
+
+.subtitle-search-results {
+  margin-top: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+}
+
+.subtitle-search-results > p,
+.subtitle-search-results > small {
+  display: block;
+  margin: 0;
+  padding: 8px 11px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.subtitle-search-results ol {
+  max-height: 260px;
+  margin: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  padding: 0;
+  list-style: none;
+}
+
+.subtitle-search-results li + li {
+  border-top: 1px solid var(--line);
+}
+
+.subtitle-search-results button {
+  display: grid;
+  width: 100%;
+  min-height: 48px;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  padding: 7px 10px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+
+.subtitle-search-results button:hover,
+.subtitle-search-results button:focus-visible {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.subtitle-search-results time {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.65rem;
+}
+
+.subtitle-search-results button span {
+  overflow: hidden;
+  font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.episode-navigation {
+  display: flex;
+  align-self: end;
+  gap: 8px;
+}
+
+.episode-navigation button {
+  min-height: 44px;
+  padding-inline: 11px;
+  font-size: 0.68rem;
+}
+
+.timeline-control {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.timeline-control > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.timeline-control strong {
+  color: var(--ink);
+  font-size: 0.68rem;
+}
+
+.timeline-control output {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-control input {
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .reader-bar > div > p:last-child {
   margin: 4px 0 0;
   color: var(--muted);
@@ -1172,6 +1342,27 @@ button:disabled {
   transition: background 160ms ease, box-shadow 160ms ease;
 }
 
+.subtitle-list.density-compact .subtitle-line {
+  padding-block: 10px;
+}
+
+.subtitle-list.density-compact .line-text {
+  line-height: 1.55;
+}
+
+.subtitle-list.density-comfortable .subtitle-line {
+  padding-block: 20px;
+}
+
+.subtitle-list.dim-inactive .subtitle-line:not(.current) .line-text {
+  opacity: 0.48;
+}
+
+.subtitle-list.dim-inactive .subtitle-line:not(.current) .time,
+.subtitle-list.dim-inactive .subtitle-line:not(.current) .line-share {
+  opacity: 0.58;
+}
+
 .line-meta {
   min-width: 0;
 }
@@ -1197,6 +1388,10 @@ button:disabled {
 .subtitle-line.current {
   background: var(--accent-soft);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.subtitle-line.jump-highlight {
+  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px rgba(242, 113, 88, 0.34);
 }
 
 .time {
@@ -1258,9 +1453,9 @@ body.reader-focus-active {
   position: fixed;
   inset: 0;
   z-index: 30;
-  display: grid;
+  display: flex;
   height: 100dvh;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  flex-direction: column;
   color: var(--ink);
   background: var(--surface);
 }
@@ -1280,6 +1475,7 @@ body.reader-focus-active {
 }
 
 .reader.is-focused .subtitle-list {
+  flex: 1;
   min-height: 0;
   max-height: none;
   overscroll-behavior: contain;
@@ -1518,6 +1714,25 @@ body.reader-focus-active {
 
   .reader-setting-control select {
     flex: 1;
+  }
+
+  .reader-tools {
+    grid-template-columns: 1fr;
+    padding: 10px 14px;
+  }
+
+  .episode-navigation {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .timeline-control {
+    grid-column: 1;
+  }
+
+  .subtitle-search-results ol {
+    max-height: 210px;
   }
 
   .reader-bar h2 {
