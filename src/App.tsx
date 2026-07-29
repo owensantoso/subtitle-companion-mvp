@@ -1,4 +1,3 @@
-/* eslint-disable react-hooks/purity */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import kuromoji from 'kuromoji/build/kuromoji.js'
@@ -56,9 +55,34 @@ type SavedLookup = {
   selected: boolean
 }
 
+type RecentSubtitle = {
+  id: string
+  name: string
+  kind: 'catalog' | 'url' | 'local'
+  viewedAt: string
+  animeId?: string
+  animeTitle?: string
+  file?: SubtitleFile
+  url?: string
+}
+
+type RecentSearch = {
+  id: string
+  title: string
+  japaneseName?: string
+  viewedAt: string
+}
+
+type RecentActivity = {
+  subtitles: RecentSubtitle[]
+  searches: RecentSearch[]
+}
+
 const savedLookupsKey = 'subtitle-companion:saved-lookups:v1'
 const subtitleFontSizeKey = 'subtitle-companion:subtitle-font-size:v1'
 const readerSettingsKey = 'subtitle-companion:reader-settings:v1'
+const recentActivityKey = 'subtitle-companion:recent-activity:v1'
+const recentActivityLimit = 6
 
 type ExportFormat = 'tsv' | 'csv' | 'txt'
 type ReaderSettings = {
@@ -274,7 +298,14 @@ function virtualTime(tracker: Tracker, now = performance.now()) {
 
 function currentSubtitle(lines: SubtitleLine[], tracker: Tracker, now = performance.now()) {
   const ms = virtualTime(tracker, now)
-  return lines.find((line) => ms >= line.startMs && ms <= line.endMs)
+  let latest: SubtitleLine | undefined
+
+  for (const line of lines) {
+    if (line.startMs > ms) break
+    latest = line
+  }
+
+  return latest
 }
 
 function formatTime(ms: number) {
@@ -371,6 +402,18 @@ function loadReaderSettings(): ReaderSettings {
   }
 }
 
+function loadRecentActivity(): RecentActivity {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(recentActivityKey) ?? '{}') as Partial<RecentActivity>
+    return {
+      subtitles: Array.isArray(parsed.subtitles) ? parsed.subtitles.slice(0, recentActivityLimit) : [],
+      searches: Array.isArray(parsed.searches) ? parsed.searches.slice(0, recentActivityLimit) : [],
+    }
+  } catch {
+    return { subtitles: [], searches: [] }
+  }
+}
+
 function animeStateId(entry: AnimeCatalogEntry) {
   return new URL(entry.url).pathname.replace(/^\/+/, '')
 }
@@ -409,7 +452,13 @@ function App() {
   const [shareStatus, setShareStatus] = useState('')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('tsv')
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
+  const [recentActivity, setRecentActivity] = useState(loadRecentActivity)
+  const [loadingRecentId, setLoadingRecentId] = useState('')
+  const [focusMode, setFocusMode] = useState(false)
+  const [followCurrent, setFollowCurrent] = useState(true)
   const liveRef = useRef<HTMLLIElement | null>(null)
+  const subtitleListRef = useRef<HTMLOListElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const current = currentSubtitle(lines, tracker, tick)
   const tokenizedLines = useMemo(() => lines.map((line) => ({ line, tokens: tokenize(line.plainText, dictionaryBuckets, tokenizer) })), [dictionaryBuckets, lines, tokenizer])
@@ -421,10 +470,33 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (tracker.status === 'running' && current) {
-      liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    if (tracker.status === 'running' && current && followCurrent) {
+      scrollCurrentLine(focusMode ? 'start' : 'center')
     }
-  }, [current, tracker.status])
+  }, [current, focusMode, followCurrent, tracker.status])
+
+  useEffect(() => {
+    if (!focusMode) return
+
+    document.documentElement.classList.add('reader-focus-active')
+    document.body.classList.add('reader-focus-active')
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFocusMode(false)
+    }
+    const handleResize = () => {
+      if (followCurrent) window.requestAnimationFrame(() => scrollCurrentLine('start', false))
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', handleResize)
+    window.requestAnimationFrame(() => scrollCurrentLine('start', false))
+
+    return () => {
+      document.documentElement.classList.remove('reader-focus-active')
+      document.body.classList.remove('reader-focus-active')
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [focusMode, followCurrent])
 
   useEffect(() => {
     let cancelled = false
@@ -460,6 +532,10 @@ function App() {
   }, [readerSettings])
 
   useEffect(() => {
+    localStorage.setItem(recentActivityKey, JSON.stringify(recentActivity))
+  }, [recentActivity])
+
+  useEffect(() => {
     let cancelled = false
 
     void loadAnimeCatalog()
@@ -476,6 +552,7 @@ function App() {
           setShareStatus('')
           setSelectedAnime(sharedEntry)
           setAnimeQuery(sharedEntry.title)
+          recordRecentSearch(sharedEntry)
         }
       })
       .catch(() => {
@@ -527,19 +604,71 @@ function App() {
     }
   }, [])
 
-  function openSubtitle(name: string, text: string) {
+  function recordRecentSearch(entry: AnimeCatalogEntry) {
+    const nextSearch: RecentSearch = {
+      id: animeStateId(entry),
+      title: entry.title,
+      japaneseName: entry.japaneseName,
+      viewedAt: new Date().toISOString(),
+    }
+
+    setRecentActivity((currentActivity) => ({
+      ...currentActivity,
+      searches: [
+        nextSearch,
+        ...currentActivity.searches.filter((search) => search.id !== nextSearch.id),
+      ].slice(0, recentActivityLimit),
+    }))
+  }
+
+  function recordRecentSubtitle(subtitle: Omit<RecentSubtitle, 'viewedAt'>) {
+    const nextSubtitle: RecentSubtitle = {
+      ...subtitle,
+      viewedAt: new Date().toISOString(),
+    }
+
+    setRecentActivity((currentActivity) => ({
+      ...currentActivity,
+      subtitles: [
+        nextSubtitle,
+        ...currentActivity.subtitles.filter((recent) => recent.id !== nextSubtitle.id),
+      ].slice(0, recentActivityLimit),
+    }))
+  }
+
+  function openSubtitle(name: string, text: string, recent?: Omit<RecentSubtitle, 'viewedAt'>) {
     const parsed = parseSubtitle(name, text)
     setLines(parsed)
     setSourceName(name)
     setError('')
+    setSelectedToken(null)
+    setFollowCurrent(true)
     setTracker({ status: 'idle', anchorSubtitleMs: parsed[0]?.startMs ?? 0, anchorClockMs: performance.now() })
+    if (recent) recordRecentSubtitle(recent)
+  }
+
+  function scrollCurrentLine(block: 'start' | 'center', smooth = true) {
+    const list = subtitleListRef.current
+    const line = liveRef.current
+    if (!list || !line) return
+
+    const lineTop = line.offsetTop - list.offsetTop
+    const centeredTop = lineTop - (list.clientHeight - line.offsetHeight) / 2
+    list.scrollTo({
+      top: block === 'start' ? lineTop : centeredTop,
+      behavior: smooth ? 'smooth' : 'auto',
+    })
   }
 
   async function handleFile(file?: File) {
     if (!file) return
     try {
       const text = await file.text()
-      openSubtitle(file.name, text)
+      openSubtitle(file.name, text, {
+        id: `local:${file.name}`,
+        name: file.name,
+        kind: 'local',
+      })
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not read this subtitle file.')
     }
@@ -557,7 +686,12 @@ function App() {
     }
 
     try {
-      openSubtitle(url, text)
+      openSubtitle(url, text, {
+        id: `url:${url}`,
+        name: url.split('/').pop() || url,
+        kind: 'url',
+        url,
+      })
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unsupported subtitle format. Try .srt, .vtt, or .ass.')
     }
@@ -571,6 +705,59 @@ function App() {
     setSelectedAnime(entry)
     setAnimeQuery(entry.title)
     updateAnimeUrl(entry)
+    recordRecentSearch(entry)
+  }
+
+  function handleRecentSearch(search: RecentSearch) {
+    const entry = animeCatalog.find((candidate) => animeStateId(candidate) === search.id)
+    if (entry) handleAnimeSelect(entry)
+  }
+
+  async function handleRecentSubtitle(recent: RecentSubtitle) {
+    if (recent.kind === 'local') {
+      fileInputRef.current?.click()
+      return
+    }
+
+    setLoadingRecentId(recent.id)
+    setError('')
+
+    try {
+      if (recent.kind === 'catalog' && recent.file) {
+        const entry = recent.animeId
+          ? animeCatalog.find((candidate) => animeStateId(candidate) === recent.animeId)
+          : undefined
+        if (entry) handleAnimeSelect(entry)
+        const text = await loadAjattSubtitleFile(recent.file)
+        openSubtitle(`${recent.animeTitle ?? 'AJATT'} · ${recent.file.name}`, text, {
+          id: recent.id,
+          name: recent.name,
+          kind: recent.kind,
+          animeId: recent.animeId,
+          animeTitle: recent.animeTitle,
+          file: recent.file,
+        })
+      } else if (recent.kind === 'url' && recent.url) {
+        const response = await fetch(recent.url)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const text = await response.text()
+        openSubtitle(recent.url, text, {
+          id: recent.id,
+          name: recent.name,
+          kind: recent.kind,
+          url: recent.url,
+        })
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not reopen this subtitle.')
+    } finally {
+      setLoadingRecentId('')
+    }
+  }
+
+  function jumpToCurrent() {
+    setFollowCurrent(true)
+    window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center'))
   }
 
   async function shareSelectedAnime() {
@@ -607,7 +794,14 @@ function App() {
     setError('')
     try {
       const text = await loadAjattSubtitleFile(file)
-      openSubtitle(`${selectedAnime?.title ?? 'AJATT'} · ${file.name}`, text)
+      openSubtitle(`${selectedAnime?.title ?? 'AJATT'} · ${file.name}`, text, {
+        id: `catalog:${file.url}`,
+        name: file.name,
+        kind: 'catalog',
+        animeId: selectedAnime ? animeStateId(selectedAnime) : undefined,
+        animeTitle: selectedAnime?.title,
+        file,
+      })
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not load this subtitle file.')
     } finally {
@@ -632,8 +826,9 @@ function App() {
   }
 
   function reanchor(line: SubtitleLine) {
+    setFollowCurrent(true)
     setTracker({ status: 'running', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
-    window.requestAnimationFrame(() => liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+    window.requestAnimationFrame(() => scrollCurrentLine(focusMode ? 'start' : 'center'))
   }
 
   function saveLookup(token: Token, line: SubtitleLine) {
@@ -768,6 +963,49 @@ function App() {
                   </div>
                   <p className="catalog-status">{catalogStatus}</p>
 
+                  {!animeQuery.trim() && !selectedAnime && (recentActivity.searches.length > 0 || recentActivity.subtitles.length > 0) ? (
+                    <section className="recent-activity" aria-label="Recent activity">
+                      {recentActivity.searches.length > 0 ? (
+                        <div className="recent-group">
+                          <h3>Recent searches</h3>
+                          <div className="recent-searches">
+                            {recentActivity.searches.map((search) => (
+                              <button
+                                className="recent-search"
+                                type="button"
+                                key={search.id}
+                                onClick={() => handleRecentSearch(search)}
+                                disabled={animeCatalog.length === 0}
+                              >
+                                <span>{search.title}</span>
+                                {search.japaneseName ? <small lang="ja">{search.japaneseName}</small> : null}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {recentActivity.subtitles.length > 0 ? (
+                        <div className="recent-group">
+                          <h3>Recently viewed</h3>
+                          <ol className="recent-subtitles">
+                            {recentActivity.subtitles.map((recent) => (
+                              <li key={recent.id}>
+                                <button type="button" onClick={() => void handleRecentSubtitle(recent)} disabled={Boolean(loadingRecentId)}>
+                                  <span>
+                                    <strong>{recent.name}</strong>
+                                    <small>{recent.animeTitle ?? (recent.kind === 'local' ? 'Local file' : 'Direct URL')}</small>
+                                  </span>
+                                  <em>{loadingRecentId === recent.id ? 'Opening…' : recent.kind === 'local' ? 'Choose again' : 'Open'}</em>
+                                </button>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      ) : null}
+                    </section>
+                  ) : null}
+
                   {animeQuery.trim() && !selectedAnime ? (
                     <ul className="anime-suggestions" id="anime-suggestions" role="listbox">
                       {animeResults.map((entry) => (
@@ -825,7 +1063,7 @@ function App() {
                   <summary>Import a file or direct URL</summary>
                   <div>
                     <label className="file-picker">
-                      <input className="file-input" type="file" accept=".srt,.vtt,.ass" onChange={(event) => void handleFile(event.target.files?.[0])} />
+                      <input ref={fileInputRef} className="file-input" type="file" accept=".srt,.vtt,.ass" onChange={(event) => void handleFile(event.target.files?.[0])} />
                       <span className="file-copy">
                         <strong>Choose a subtitle file</strong>
                         <small>SRT, VTT, or ASS · stays on this device</small>
@@ -860,13 +1098,28 @@ function App() {
             </details>
 
             {lines.length > 0 ? (
-              <section className="reader" aria-labelledby="reader-title">
+              <section
+                className={focusMode ? 'reader is-focused' : 'reader'}
+                role={focusMode ? 'dialog' : undefined}
+                aria-modal={focusMode ? true : undefined}
+                aria-labelledby="reader-title"
+              >
                 <header className="reader-bar">
                   <div>
                     <p className="eyebrow">Now reading</p>
                     <h2 id="reader-title">{sourceName}</h2>
                     <p>{lines.length} subtitle lines</p>
                   </div>
+                  <button className="secondary focus-toggle" type="button" onClick={() => {
+                    setFocusMode((currentMode) => !currentMode)
+                    setFollowCurrent(true)
+                  }}>
+                    {focusMode ? 'Exit focus' : 'Focus view'}
+                  </button>
+                </header>
+
+                <details className="reader-preferences">
+                  <summary>Display settings</summary>
                   <div className="reader-settings">
                     <label className="reader-setting-control">
                       Text
@@ -899,15 +1152,26 @@ function App() {
                       Furigana {readerSettings.furigana ? 'on' : 'off'}
                     </button>
                   </div>
-                </header>
+                </details>
 
                 <div className="controls">
                   <button type="button" onClick={togglePlayback}>{tracker.status === 'running' ? 'Pause' : tracker.status === 'paused' ? 'Resume' : 'Start clock'}</button>
-                  <button className="text-button" type="button" onClick={() => liveRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>Jump to current</button>
+                  <button className="text-button" type="button" onClick={jumpToCurrent}>Jump to current</button>
+                  {focusMode ? (
+                    <button
+                      className="text-button follow-toggle"
+                      type="button"
+                      aria-pressed={followCurrent}
+                      onClick={() => setFollowCurrent((isFollowing) => !isFollowing)}
+                    >
+                      {followCurrent ? 'Following current' : 'Browse history'}
+                    </button>
+                  ) : null}
                   <span className="clock"><i className={tracker.status === 'running' ? 'is-live' : ''} aria-hidden="true" />{formatTime(virtualTime(tracker, tick))}</span>
                 </div>
 
                 <ol
+                  ref={subtitleListRef}
                   className="subtitle-list"
                   style={{
                     '--subtitle-font-size': `${readerSettings.subtitleFontSize}px`,
