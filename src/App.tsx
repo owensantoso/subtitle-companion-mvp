@@ -649,12 +649,12 @@ function AutoScrollIcon() {
   )
 }
 
-function TapSeekIcon() {
+function PlaybackLockIcon({ locked }: { locked: boolean }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
-      <circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <circle cx="12" cy="12" r="2" fill="currentColor" />
-      <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <rect x="5" y="10" width="14" height="10" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d={locked ? 'M8 10V7.5a4 4 0 0 1 8 0V10' : 'M9 10V7.5a4 4 0 0 1 7.2-2.4'} fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <circle cx="12" cy="15" r="1.3" fill="currentColor" />
     </svg>
   )
 }
@@ -774,6 +774,7 @@ function App() {
   const programmaticScrollTargetRef = useRef<number | null>(null)
   const pictureInPictureWindowRef = useRef<Window | null>(null)
   const playheadDraggingRef = useRef(false)
+  const playheadPointerStartRef = useRef<{ x: number; y: number; startedAt: number } | null>(null)
   const timelineDraggingRef = useRef(false)
   const timelineBoundsRef = useRef<DOMRect | null>(null)
   const timelineBrowseFrameRef = useRef<number | null>(null)
@@ -784,6 +785,9 @@ function App() {
   const timelineViewMarkerRef = useRef<HTMLSpanElement | null>(null)
   const timelinePlayheadRef = useRef<HTMLButtonElement | null>(null)
   const timelinePreviewRef = useRef<HTMLDivElement | null>(null)
+  const timelinePreviewLinesRef = useRef<HTMLDivElement | null>(null)
+  const timelineHoverIndicatorRef = useRef<HTMLSpanElement | null>(null)
+  const timelinePreviewLineIndexRef = useRef<number | null>(null)
   const playingTimestampRef = useRef(0)
   const followCurrentRef = useRef(true)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
@@ -1617,32 +1621,55 @@ function App() {
 
   function updateTimelinePreview(clientX: number, target: HTMLElement) {
     const preview = timelinePreviewRef.current
-    if (!preview) return
+    const indicator = timelineHoverIndicatorRef.current
+    const previewLines = timelinePreviewLinesRef.current
+    if (!preview || !indicator || !previewLines) return
     const bounds = target.parentElement?.getBoundingClientRect()
     if (!bounds) return
     const timestamp = timestampAtPosition(clientX, target)
     const line = nearestLineAt(timestamp)
     if (!line) return
-    const progress = Math.min(1, Math.max(0, (clientX - bounds.left) / bounds.width))
+    const linePosition = lines.findIndex((candidate) => candidate.id === line.id)
+    const previous = lines[Math.max(0, linePosition - 1)]
+    const next = lines[Math.min(lines.length - 1, linePosition + 1)]
+    const steppedProgress = (line.startMs - timelineStart) / timelineDuration
     preview.hidden = false
-    preview.style.left = `${Math.min(0.88, Math.max(0.12, progress)) * 100}%`
-    const time = preview.querySelector<HTMLElement>('time')
-    const text = preview.querySelector<HTMLElement>('span')
-    if (time) time.textContent = formatTime(line.startMs)
-    if (text) text.textContent = line.plainText
+    indicator.hidden = false
+    preview.style.left = `${Math.min(0.86, Math.max(0.14, steppedProgress)) * 100}%`
+    indicator.style.left = `clamp(4px, ${steppedProgress * 100}%, calc(100% - 4px))`
+    if (timelinePreviewLineIndexRef.current === linePosition) return
+
+    const previousIndex = timelinePreviewLineIndexRef.current
+    previewLines.dataset.direction = previousIndex === null || linePosition >= previousIndex ? 'forward' : 'backward'
+    timelinePreviewLineIndexRef.current = linePosition
+    const previousText = previewLines.querySelector<HTMLElement>('[data-preview-previous]')
+    const currentTime = previewLines.querySelector<HTMLElement>('[data-preview-time]')
+    const currentText = previewLines.querySelector<HTMLElement>('[data-preview-current]')
+    const nextText = previewLines.querySelector<HTMLElement>('[data-preview-next]')
+    if (previousText) previousText.textContent = previous.plainText
+    if (currentTime) currentTime.textContent = formatTime(line.startMs)
+    if (currentText) currentText.textContent = line.plainText
+    if (nextText) nextText.textContent = next.plainText
+    previewLines.classList.remove('is-stepping')
+    void previewLines.offsetWidth
+    previewLines.classList.add('is-stepping')
   }
 
   function hideTimelinePreview() {
     if (timelinePreviewRef.current) timelinePreviewRef.current.hidden = true
+    if (timelineHoverIndicatorRef.current) timelineHoverIndicatorRef.current.hidden = true
+    timelinePreviewLineIndexRef.current = null
   }
 
   function handleTimelinePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault()
     timelineDraggingRef.current = true
     timelineBoundsRef.current = event.currentTarget.parentElement?.getBoundingClientRect() ?? null
+    if (timelineViewMarkerRef.current) timelineViewMarkerRef.current.style.transition = 'none'
     event.currentTarget.setPointerCapture(event.pointerId)
     hideTimelinePreview()
     browseToTimestamp(timestampAtPosition(event.clientX, event.currentTarget), false)
+    renderViewportDrag()
   }
 
   function handleTimelinePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -1652,6 +1679,7 @@ function App() {
         timelineBrowseFrameRef.current = window.requestAnimationFrame(() => {
           timelineBrowseFrameRef.current = null
           browseToTimestamp(pendingTimelineBrowseRef.current, false)
+          renderViewportDrag()
         })
       }
       return
@@ -1667,7 +1695,13 @@ function App() {
       timelineBrowseFrameRef.current = null
     }
     browseToTimestamp(timestampAtPosition(event.clientX, event.currentTarget), false)
+    renderViewportDrag()
     timelineBoundsRef.current = null
+    window.requestAnimationFrame(() => {
+      timelineViewMarkerRef.current?.style.removeProperty('transition')
+      timelineViewMarkerRef.current?.style.removeProperty('width')
+      timelineViewMarkerRef.current?.style.removeProperty('height')
+    })
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
@@ -1686,29 +1720,48 @@ function App() {
   function handlePlayheadPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault()
     event.stopPropagation()
-    playheadDraggingRef.current = true
+    playheadPointerStartRef.current = { x: event.clientX, y: event.clientY, startedAt: performance.now() }
+    playheadDraggingRef.current = false
     playheadFollowOnDragRef.current = followCurrentRef.current
     timelineBoundsRef.current = event.currentTarget.parentElement?.getBoundingClientRect() ?? null
-    if (timelineViewMarkerRef.current) timelineViewMarkerRef.current.style.transition = 'none'
     event.currentTarget.setPointerCapture(event.pointerId)
-    const timestamp = timestampAtPosition(event.clientX, event.currentTarget)
-    renderPlayheadDrag(timestamp)
   }
 
   function handlePlayheadPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (!playheadDraggingRef.current) return
+    const pointerStart = playheadPointerStartRef.current
+    if (!pointerStart) return
+    if (!playheadDraggingRef.current) {
+      const distance = Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y)
+      if (distance < 6) return
+      playheadDraggingRef.current = true
+      if (timelineViewMarkerRef.current) timelineViewMarkerRef.current.style.transition = 'none'
+    }
     const timestamp = timestampAtPosition(event.clientX, event.currentTarget)
     renderPlayheadDrag(timestamp)
   }
 
   function handlePlayheadPointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (!playheadDraggingRef.current) return
+    const pointerStart = playheadPointerStartRef.current
+    if (!pointerStart) return
+    const wasDragging = playheadDraggingRef.current
+    const wasShortTap = performance.now() - pointerStart.startedAt <= 350
+    if (wasDragging) {
+      const timestamp = timestampAtPosition(event.clientX, event.currentTarget)
+      setPlayheadTimestamp(timestamp, playheadFollowOnDragRef.current)
+    } else if (wasShortTap && !followCurrentRef.current) {
+      jumpToCurrent()
+    }
+    playheadPointerStartRef.current = null
     playheadDraggingRef.current = false
-    const timestamp = timestampAtPosition(event.clientX, event.currentTarget)
-    setPlayheadTimestamp(timestamp, playheadFollowOnDragRef.current)
     timelineBoundsRef.current = null
     timelineViewMarkerRef.current?.style.removeProperty('transition')
     event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  function setViewingLabel(text: string) {
+    const output = timelineControlRef.current?.querySelector<HTMLOutputElement>('.viewing-time')
+    const label = output ? Array.from(output.childNodes).find((node) => node.nodeType === Node.TEXT_NODE) : undefined
+    if (label) label.textContent = text
   }
 
   function renderPlayheadDrag(timestamp: number) {
@@ -1721,11 +1774,7 @@ function App() {
     }
     const input = timelineControlRef.current?.querySelector<HTMLInputElement>('.playing-time input')
     if (input) input.value = formatTime(boundedTimestamp)
-    if (playheadFollowOnDragRef.current) {
-      const output = timelineControlRef.current?.querySelector<HTMLOutputElement>('.viewing-time')
-      const label = output ? Array.from(output.childNodes).find((node) => node.nodeType === Node.TEXT_NODE) : undefined
-      if (label) label.textContent = `Synced ${formatTime(boundedTimestamp)}`
-    }
+    if (playheadFollowOnDragRef.current) setViewingLabel(`Synced ${formatTime(boundedTimestamp)}`)
   }
 
   function handlePlayheadKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
@@ -1740,7 +1789,7 @@ function App() {
     setPlayheadTimestamp(nextTimestamp, true)
   }
 
-  function updateViewedPosition() {
+  function visibleTranscriptRange() {
     const list = subtitleListRef.current
     if (!list || lines.length === 0) return
     const elements = Array.from(list.querySelectorAll<HTMLElement>('[data-line-index]'))
@@ -1753,10 +1802,33 @@ function App() {
     const lastVisible = elements.findLast((element) => (
       element.offsetTop - list.offsetTop < viewportBottom
     )) ?? elements.at(-1)
-    const nextViewedTimestamp = Number(firstVisible.dataset.startMs)
-    const nextViewedEndTimestamp = Number(lastVisible?.dataset.endMs)
-    if (Number.isFinite(nextViewedTimestamp)) setViewedTimestamp(nextViewedTimestamp)
-    if (Number.isFinite(nextViewedEndTimestamp)) setViewedEndTimestamp(nextViewedEndTimestamp)
+    const startMs = Number(firstVisible.dataset.startMs)
+    const endMs = Number(lastVisible?.dataset.endMs)
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return
+    return { startMs, endMs }
+  }
+
+  function renderViewportDrag() {
+    const range = visibleTranscriptRange()
+    const marker = timelineViewMarkerRef.current
+    if (!range || !marker) return
+    const startPosition = ((range.startMs - timelineStart) / timelineDuration) * 100
+    const endPosition = ((range.endMs - timelineStart) / timelineDuration) * 100
+    const center = (startPosition + endPosition) / 2
+    const width = Math.max(0, endPosition - startPosition)
+    marker.style.left = `clamp(19px, ${center}%, calc(100% - 19px))`
+    marker.style.setProperty('--view-range-width', `${width}%`)
+    marker.style.width = `max(38px, ${width}%)`
+    marker.style.height = '18px'
+    setViewingLabel(`Viewing ${formatTime(range.startMs)}–${formatTime(range.endMs)}`)
+  }
+
+  function updateViewedPosition() {
+    const list = subtitleListRef.current
+    const range = visibleTranscriptRange()
+    if (!list || !range) return
+    setViewedTimestamp(range.startMs)
+    setViewedEndTimestamp(range.endMs)
     const reachedProgrammaticTarget = programmaticScrollTargetRef.current !== null
       && Math.abs(list.scrollTop - programmaticScrollTargetRef.current) < 2
     if (reachedProgrammaticTarget) programmaticScrollTargetRef.current = null
@@ -2413,6 +2485,9 @@ function App() {
                         onPointerCancel={() => {
                           timelineDraggingRef.current = false
                           timelineBoundsRef.current = null
+                          timelineViewMarkerRef.current?.style.removeProperty('transition')
+                          timelineViewMarkerRef.current?.style.removeProperty('width')
+                          timelineViewMarkerRef.current?.style.removeProperty('height')
                           if (timelineBrowseFrameRef.current !== null) {
                             window.cancelAnimationFrame(timelineBrowseFrameRef.current)
                             timelineBrowseFrameRef.current = null
@@ -2435,9 +2510,16 @@ function App() {
                           aria-hidden="true"
                         />
                       </button>
+                      <span ref={timelineHoverIndicatorRef} className="timeline-hover-indicator" hidden aria-hidden="true" />
                       <div ref={timelinePreviewRef} className="timeline-preview" role="tooltip" hidden>
-                        <time>0:00</time>
-                        <span />
+                        <div ref={timelinePreviewLinesRef} className="timeline-preview-lines">
+                          <p className="timeline-preview-context" data-preview-previous />
+                          <p className="timeline-preview-current">
+                            <time data-preview-time>0:00</time>
+                            <span data-preview-current />
+                          </p>
+                          <p className="timeline-preview-context" data-preview-next />
+                        </div>
                       </div>
                       <button
                         ref={timelinePlayheadRef}
@@ -2454,6 +2536,7 @@ function App() {
                         onPointerMove={handlePlayheadPointerMove}
                         onPointerUp={handlePlayheadPointerUp}
                         onPointerCancel={() => {
+                          playheadPointerStartRef.current = null
                           playheadDraggingRef.current = false
                           timelineBoundsRef.current = null
                           timelineViewMarkerRef.current?.style.removeProperty('transition')
@@ -2490,17 +2573,24 @@ function App() {
                     <small>{followCurrent ? 'On' : 'Off'}</small>
                   </button>
                   <button
-                    className={readerSettings.tapLineToSeek ? 'tap-seek-toggle is-on' : 'tap-seek-toggle'}
+                    className={!readerSettings.tapLineToSeek ? 'tap-seek-toggle is-on control-with-tooltip' : 'tap-seek-toggle control-with-tooltip'}
                     type="button"
-                    aria-pressed={readerSettings.tapLineToSeek}
+                    aria-pressed={!readerSettings.tapLineToSeek}
+                    aria-label={`Playback lock ${readerSettings.tapLineToSeek ? 'off' : 'on'}`}
+                    data-tooltip={readerSettings.tapLineToSeek
+                      ? 'Transcript taps move playback. Turn on to prevent accidental seeking.'
+                      : 'Playback is locked. Word lookups still work.'}
+                    title={readerSettings.tapLineToSeek
+                      ? 'Transcript taps move playback. Turn on to prevent accidental seeking.'
+                      : 'Playback is locked. Word lookups still work.'}
                     onClick={() => setReaderSettings((currentSettings) => ({
                       ...currentSettings,
                       tapLineToSeek: !currentSettings.tapLineToSeek,
                     }))}
                   >
-                    <TapSeekIcon />
-                    <span>Tap to seek</span>
-                    <small>{readerSettings.tapLineToSeek ? 'On' : 'Off'}</small>
+                    <PlaybackLockIcon locked={!readerSettings.tapLineToSeek} />
+                    <span>Playback lock</span>
+                    <small>{readerSettings.tapLineToSeek ? 'Off' : 'On'}</small>
                   </button>
                   <span className="clock"><i className={tracker.status === 'running' ? 'is-live' : ''} aria-hidden="true" />{formatTime(virtualTime(tracker, tick))}</span>
                 </div>
