@@ -642,8 +642,8 @@ select {
 }
 
 button:hover {
-  border-color: #ff8a71;
-  background: #ff8a71;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 button:disabled {
@@ -1019,6 +1019,25 @@ button:disabled {
   border-top: 1px solid var(--line);
   padding: 0;
   list-style: none;
+}
+
+.saved-list.is-compact .saved-item {
+  padding-block: 10px;
+}
+
+.saved-list.is-compact .saved-item p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 0.76rem;
+}
+
+.saved-list.is-compact .lookup-sentence {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
 }
 
 .saved-item {
@@ -1568,6 +1587,15 @@ button:disabled {
   pointer-events: none;
 }
 
+/*
+ * While a gesture is driving the marker it must land where it is put, in the
+ * same frame. Easing here is what made dragging feel jittery and scrolling
+ * feel like the pill lagged behind the transcript.
+ */
+.timeline-view-marker[data-live] {
+  transition: border-color 160ms ease-out;
+}
+
 .timeline-control.is-synced .timeline-view-marker {
   width: 26px;
   height: 26px;
@@ -1613,17 +1641,54 @@ button:disabled {
   display: none;
 }
 
+/*
+ * Three rows are visible through the viewport while the strip behind it holds
+ * five, so a step can slide a new row in from either side instead of the text
+ * being swapped in place.
+ */
+.timeline-preview-viewport {
+  --preview-row-height: 22px;
+
+  height: calc(var(--preview-row-height) * 3);
+  overflow: hidden;
+}
+
 .timeline-preview-lines {
   display: grid;
-  gap: 3px;
+  grid-auto-rows: var(--preview-row-height, 22px);
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1);
 }
 
-.timeline-preview-lines.is-stepping[data-direction="forward"] {
-  animation: timeline-preview-forward 150ms ease-out;
+.timeline-preview-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  opacity: 0.5;
+  transition: opacity 160ms ease-out, color 160ms ease-out;
 }
 
-.timeline-preview-lines.is-stepping[data-direction="backward"] {
-  animation: timeline-preview-backward 150ms ease-out;
+/* The row the pointer is actually over leads; its neighbours sit back. */
+.timeline-preview-lines[data-center="0"] .timeline-preview-row:nth-child(1),
+.timeline-preview-lines[data-center="1"] .timeline-preview-row:nth-child(2),
+.timeline-preview-lines[data-center="2"] .timeline-preview-row:nth-child(3),
+.timeline-preview-lines[data-center="3"] .timeline-preview-row:nth-child(4),
+.timeline-preview-lines[data-center="4"] .timeline-preview-row:nth-child(5) {
+  color: var(--ink);
+  font-size: 0.74rem;
+  opacity: 1;
+}
+
+.timeline-preview-row[data-empty="true"] {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-preview-lines {
+    transition: none;
+  }
 }
 
 .timeline-preview p {
@@ -1634,22 +1699,9 @@ button:disabled {
   white-space: nowrap;
 }
 
-.timeline-preview-context {
-  color: var(--muted);
-  font-size: 0.65rem;
-  opacity: 0.58;
-}
 
-.timeline-preview-current {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  align-items: baseline;
-  gap: 7px;
-  border-block: 1px solid var(--line);
-  padding-block: 5px;
-  color: var(--ink);
-  font-size: 0.76rem;
-}
+
+
 
 .timeline-preview time {
   color: var(--accent);
@@ -1663,19 +1715,7 @@ button:disabled {
   white-space: nowrap;
 }
 
-@keyframes timeline-preview-forward {
-  from {
-    opacity: 0.55;
-    transform: translateY(7px);
-  }
-}
 
-@keyframes timeline-preview-backward {
-  from {
-    opacity: 0.55;
-    transform: translateY(-7px);
-  }
-}
 
 .timeline-playhead {
   position: absolute;
@@ -1792,9 +1832,9 @@ button:disabled {
 }
 
 .tap-seek-toggle.is-on {
-  border-color: var(--success);
-  color: var(--success);
-  background: rgba(127, 168, 138, 0.1);
+  border-color: color-mix(in srgb, var(--ink) 45%, transparent);
+  color: var(--ink);
+  background: rgba(241, 239, 231, 0.08);
 }
 
 .control-with-tooltip {
@@ -1898,10 +1938,16 @@ button:disabled {
   min-width: 0;
 }
 
-.line-share {
+.line-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.line-action {
   display: grid;
-  width: 44px;
-  min-height: 44px;
+  width: 40px;
+  min-height: 40px;
   place-items: center;
   border-color: transparent;
   padding: 0;
@@ -1909,11 +1955,27 @@ button:disabled {
   background: transparent;
 }
 
-.line-share:hover,
-.line-share:focus-visible {
+.line-action:hover,
+.line-action:focus-visible {
   border-color: transparent;
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+/*
+ * On a pointer device the actions stay out of the way until the line is
+ * hovered. Touch has no hover, so there they are simply always present.
+ */
+@media (hover: hover) and (pointer: fine) {
+  .line-actions {
+    opacity: 0;
+    transition: opacity 140ms ease-out;
+  }
+
+  .subtitle-line:hover .line-actions,
+  .line-actions:focus-within {
+    opacity: 1;
+  }
 }
 
 .subtitle-line.current {
@@ -1999,7 +2061,7 @@ button:disabled {
 }
 
 rt {
-  color: var(--accent);
+  color: inherit;
   font-family: "Hiragino Sans", "Yu Gothic", sans-serif;
   font-size: 0.42em;
   font-weight: 700;
@@ -2131,6 +2193,27 @@ body.reader-focus-active {
   place-items: center;
   padding: 20px;
   background: rgba(0, 0, 0, 0.72);
+  animation: modal-backdrop-in 140ms ease-out;
+}
+
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes confirm-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop,
+  .confirm-dialog {
+    animation: none;
+  }
 }
 
 .confirm-dialog {
@@ -2138,6 +2221,7 @@ body.reader-focus-active {
   border: 1px solid var(--line-strong);
   padding: 24px;
   background: var(--surface);
+  animation: confirm-dialog-in 180ms cubic-bezier(.2, .8, .2, 1);
   box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.45);
 }
 
