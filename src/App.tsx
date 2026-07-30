@@ -103,6 +103,11 @@ type ReaderSettings = {
   density: SubtitleDensity
   autoResumeFollow: boolean
   autoResumeDelayMs: number
+  tapLineToSeek: boolean
+}
+
+type DocumentPictureInPictureApi = {
+  requestWindow: (options?: { width?: number; height?: number }) => Promise<Window>
 }
 
 const seedDictionary: DictionaryEntry[] = [
@@ -471,6 +476,7 @@ function loadReaderSettings(): ReaderSettings {
     density: 'compact',
     autoResumeFollow: true,
     autoResumeDelayMs: 3000,
+    tapLineToSeek: true,
   }
 
   try {
@@ -496,6 +502,7 @@ function loadReaderSettings(): ReaderSettings {
       autoResumeDelayMs: Number.isFinite(Number(parsed.autoResumeDelayMs))
         ? Math.min(30_000, Math.max(500, Number(parsed.autoResumeDelayMs)))
         : defaults.autoResumeDelayMs,
+      tapLineToSeek: typeof parsed.tapLineToSeek === 'boolean' ? parsed.tapLineToSeek : defaults.tapLineToSeek,
     }
   } catch {
     return defaults
@@ -642,6 +649,25 @@ function AutoScrollIcon() {
   )
 }
 
+function TapSeekIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+      <circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" />
+      <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+function PictureInPictureIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19">
+      <rect x="3.5" y="5" width="17" height="14" rx="1" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="11.5" y="11.5" width="7" height="5" rx=".5" fill="currentColor" />
+    </svg>
+  )
+}
+
 function CloseIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
@@ -725,6 +751,7 @@ function App() {
   const [mobileTab, setMobileTab] = useState<MobileTab>('home')
   const [focusMode, setFocusMode] = useState(false)
   const [followCurrent, setFollowCurrent] = useState(true)
+  const [pictureInPictureActive, setPictureInPictureActive] = useState(false)
   const [importOpen, setImportOpen] = useState(true)
   const [subtitleQuery, setSubtitleQuery] = useState('')
   const [highlightedLineId, setHighlightedLineId] = useState('')
@@ -742,6 +769,9 @@ function App() {
   const deepLinkFileHandledRef = useRef(false)
   const scrollAnimationRef = useRef<number | null>(null)
   const autoResumeTimerRef = useRef<number | null>(null)
+  const ignoreScrollEventsUntilRef = useRef(0)
+  const programmaticScrollTargetRef = useRef<number | null>(null)
+  const pictureInPictureWindowRef = useRef<Window | null>(null)
   const playheadDraggingRef = useRef(false)
   const playingTimestampRef = useRef(0)
   const followCurrentRef = useRef(true)
@@ -780,6 +810,9 @@ function App() {
   const timelineDuration = Math.max(1, timelineEnd - timelineStart)
   const playingPosition = ((playingTimestamp - timelineStart) / timelineDuration) * 100
   const viewedPosition = ((Math.min(timelineEnd, Math.max(timelineStart, viewedTimestamp)) - timelineStart) / timelineDuration) * 100
+  const displayedViewedTimestamp = followCurrent ? playingTimestamp : viewedTimestamp
+  const displayedViewedPosition = followCurrent ? playingPosition : viewedPosition
+  const pictureInPictureApi = (window as Window & { documentPictureInPicture?: DocumentPictureInPictureApi }).documentPictureInPicture
 
   useEffect(() => {
     suggestionRefs.current[activeSuggestionIndex]?.scrollIntoView({ block: 'nearest' })
@@ -811,6 +844,20 @@ function App() {
     const id = window.setInterval(() => setTick(performance.now()), 250)
     return () => window.clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    if (!pictureInPictureActive) return
+    const pipWindow = pictureInPictureWindowRef.current
+    if (!pipWindow || pipWindow.closed) return
+    const subtitle = pipWindow.document.querySelector<HTMLElement>('[data-pip-subtitle]')
+    const time = pipWindow.document.querySelector<HTMLElement>('[data-pip-time]')
+    const status = pipWindow.document.querySelector<HTMLElement>('[data-pip-status]')
+    const progress = pipWindow.document.querySelector<HTMLElement>('[data-pip-progress]')
+    if (subtitle) subtitle.textContent = current?.plainText ?? 'Waiting for the next subtitle…'
+    if (time) time.textContent = `${formatTime(playingTimestamp)} / ${formatTime(timelineEnd)}`
+    if (status) status.textContent = tracker.status === 'running' ? 'Playing' : 'Paused'
+    if (progress) progress.style.width = `${playingPosition}%`
+  }, [current?.plainText, pictureInPictureActive, playingPosition, playingTimestamp, timelineEnd, tracker.status])
 
   useEffect(() => {
     if (tracker.status === 'running' && current && followCurrent) {
@@ -892,6 +939,7 @@ function App() {
   useEffect(() => () => {
     if (autoResumeTimerRef.current !== null) window.clearTimeout(autoResumeTimerRef.current)
     if (scrollAnimationRef.current !== null) window.cancelAnimationFrame(scrollAnimationRef.current)
+    pictureInPictureWindowRef.current?.close()
   }, [])
 
   useEffect(() => {
@@ -1091,7 +1139,9 @@ function App() {
 
     const boundedTop = Math.min(list.scrollHeight - list.clientHeight, Math.max(0, targetTop))
     const distance = boundedTop - list.scrollTop
+    programmaticScrollTargetRef.current = boundedTop
     if (!smooth || Math.abs(distance) < 2 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      ignoreScrollEventsUntilRef.current = performance.now() + 120
       list.scrollTop = boundedTop
       return
     }
@@ -1103,8 +1153,12 @@ function App() {
       const progress = Math.min(1, (now - startedAt) / duration)
       const eased = 1 - (1 - progress) ** 3
       list.scrollTop = startTop + distance * eased
-      if (progress < 1) scrollAnimationRef.current = window.requestAnimationFrame(animate)
-      else scrollAnimationRef.current = null
+      if (progress < 1) {
+        scrollAnimationRef.current = window.requestAnimationFrame(animate)
+      } else {
+        ignoreScrollEventsUntilRef.current = now + 120
+        scrollAnimationRef.current = null
+      }
     }
     scrollAnimationRef.current = window.requestAnimationFrame(animate)
   }
@@ -1276,6 +1330,64 @@ function App() {
     setFollowCurrent(true)
     setViewedTimestamp(playingTimestamp)
     window.requestAnimationFrame(() => scrollCurrentLine('center'))
+  }
+
+  async function togglePictureInPicture() {
+    const existingWindow = pictureInPictureWindowRef.current
+    if (existingWindow && !existingWindow.closed) {
+      existingWindow.close()
+      pictureInPictureWindowRef.current = null
+      setPictureInPictureActive(false)
+      return
+    }
+    if (!pictureInPictureApi) return
+
+    try {
+      const pipWindow = await pictureInPictureApi.requestWindow({ width: 420, height: 220 })
+      const style = pipWindow.document.createElement('style')
+      style.textContent = `
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        body {
+          display: grid;
+          min-height: 100vh;
+          margin: 0;
+          padding: 20px;
+          color: #f1efe7;
+          background: #101210;
+          font-family: "Avenir Next", Avenir, "Hiragino Sans", sans-serif;
+        }
+        main { display: grid; align-content: space-between; gap: 18px; }
+        .status { display: flex; justify-content: space-between; color: #a5a79f; font: 600 13px ui-monospace, monospace; }
+        .status span:first-child { color: #7fa88a; }
+        .subtitle {
+          margin: 0;
+          font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+          font-size: clamp(24px, 8vw, 38px);
+          font-weight: 600;
+          line-height: 1.4;
+        }
+        .track { height: 6px; overflow: hidden; border-radius: 999px; background: #323432; }
+        .progress { display: block; width: 0; height: 100%; background: #ed735b; }
+      `
+      pipWindow.document.head.append(style)
+      pipWindow.document.body.innerHTML = `
+        <main>
+          <div class="status"><span data-pip-status>Paused</span><span data-pip-time>0:00 / 0:00</span></div>
+          <p class="subtitle" data-pip-subtitle>Waiting for the next subtitle…</p>
+          <div class="track"><span class="progress" data-pip-progress></span></div>
+        </main>
+      `
+      pictureInPictureWindowRef.current = pipWindow
+      setPictureInPictureActive(true)
+      pipWindow.addEventListener('pagehide', () => {
+        if (pictureInPictureWindowRef.current !== pipWindow) return
+        pictureInPictureWindowRef.current = null
+        setPictureInPictureActive(false)
+      }, { once: true })
+    } catch {
+      setShareStatus('Picture in Picture could not be opened in this browser.')
+    }
   }
 
   function buildShareUrl(lineMs?: number) {
@@ -1532,6 +1644,17 @@ function App() {
     ), elements[0])
     const nextViewedTimestamp = Number(nearestElement?.dataset.startMs)
     if (Number.isFinite(nextViewedTimestamp)) setViewedTimestamp(nextViewedTimestamp)
+    const reachedProgrammaticTarget = programmaticScrollTargetRef.current !== null
+      && Math.abs(list.scrollTop - programmaticScrollTargetRef.current) < 2
+    if (reachedProgrammaticTarget) programmaticScrollTargetRef.current = null
+    if (
+      scrollAnimationRef.current === null
+      && !reachedProgrammaticTarget
+      && performance.now() > ignoreScrollEventsUntilRef.current
+    ) {
+      setFollowCurrent(false)
+      scheduleAutoResume()
+    }
   }
 
   function stopFollowingForBrowse() {
@@ -1539,6 +1662,7 @@ function App() {
       window.cancelAnimationFrame(scrollAnimationRef.current)
       scrollAnimationRef.current = null
     }
+    programmaticScrollTargetRef.current = null
     setFollowCurrent(false)
     scheduleAutoResume()
   }
@@ -1937,6 +2061,11 @@ function App() {
                     <button className="secondary icon-button copy-link" type="button" aria-label="Copy subtitle link" title="Copy link" onClick={() => void copyReaderLink()}>
                       <LinkIcon />
                     </button>
+                    {pictureInPictureApi ? (
+                      <button className="secondary icon-button pip-toggle" type="button" aria-pressed={pictureInPictureActive} aria-label={pictureInPictureActive ? 'Close subtitle Picture in Picture' : 'Open subtitle Picture in Picture'} title="Subtitle Picture in Picture" onClick={() => void togglePictureInPicture()}>
+                        <PictureInPictureIcon />
+                      </button>
+                    ) : null}
                     <button className="secondary icon-button focus-toggle" type="button" aria-label={focusMode ? 'Exit focus view' : 'Enter focus view'} title={focusMode ? 'Exit focus' : 'Focus view'} onClick={() => {
                       setFocusMode((currentMode) => {
                         const nextMode = !currentMode
@@ -2127,13 +2256,13 @@ function App() {
                     </p>
                   </div>
 
-                  <div className="timeline-control">
+                  <div className={`timeline-control ${followCurrent ? 'is-synced' : 'is-browsing'} ${tracker.status === 'running' ? 'is-running' : 'is-paused'}`}>
                     <span className="timeline-labels">
                       <strong>Timeline</strong>
                       <span>
                         <label className={seekTimeInvalid ? 'playing-time is-invalid' : 'playing-time'}>
                           <i aria-hidden="true" />
-                          <span>Playing</span>
+                          <span>{tracker.status === 'running' ? 'Playing' : 'Paused'}</span>
                           <input
                             type="text"
                             inputMode="text"
@@ -2152,7 +2281,7 @@ function App() {
                             onKeyDown={handleSeekTimeKey}
                           />
                         </label>
-                        <output className="viewing-time"><i aria-hidden="true" />Viewing {formatTime(viewedTimestamp)}</output>
+                        <output className="viewing-time"><i aria-hidden="true" />{followCurrent ? 'Synced' : 'Viewing'} {formatTime(displayedViewedTimestamp)}</output>
                       </span>
                     </span>
                     <div className="timeline-track-wrap">
@@ -2161,10 +2290,10 @@ function App() {
                         type="button"
                         onClick={handleTimelineBrowse}
                         onKeyDown={handleTimelineBrowseKey}
-                        aria-label={`Browse subtitle timeline. Viewing ${formatTime(viewedTimestamp)}`}
+                        aria-label={`Browse subtitle timeline. ${followCurrent ? 'Synced at' : 'Viewing'} ${formatTime(displayedViewedTimestamp)}`}
                       >
                         <span className="timeline-progress" style={{ width: `${playingPosition}%` }} aria-hidden="true" />
-                        <span className="timeline-view-marker" style={{ left: `${viewedPosition}%` }} aria-hidden="true" />
+                        <span className="timeline-view-marker" style={{ left: `${displayedViewedPosition}%` }} aria-hidden="true" />
                       </button>
                       <button
                         className="timeline-playhead"
@@ -2211,6 +2340,19 @@ function App() {
                     <span>Autoscroll</span>
                     <small>{followCurrent ? 'On' : 'Off'}</small>
                   </button>
+                  <button
+                    className={readerSettings.tapLineToSeek ? 'tap-seek-toggle is-on' : 'tap-seek-toggle'}
+                    type="button"
+                    aria-pressed={readerSettings.tapLineToSeek}
+                    onClick={() => setReaderSettings((currentSettings) => ({
+                      ...currentSettings,
+                      tapLineToSeek: !currentSettings.tapLineToSeek,
+                    }))}
+                  >
+                    <TapSeekIcon />
+                    <span>Tap to seek</span>
+                    <small>{readerSettings.tapLineToSeek ? 'On' : 'Off'}</small>
+                  </button>
                   <span className="clock"><i className={tracker.status === 'running' ? 'is-live' : ''} aria-hidden="true" />{formatTime(virtualTime(tracker, tick))}</span>
                 </div>
 
@@ -2233,11 +2375,18 @@ function App() {
                           'subtitle-line',
                           isCurrent ? 'current' : '',
                           line.id === highlightedLineId ? 'jump-highlight' : '',
+                          readerSettings.tapLineToSeek ? 'is-seekable' : '',
                         ].filter(Boolean).join(' ')}
                         key={line.id}
                         ref={isCurrent ? liveRef : undefined}
                         data-line-index={line.index}
                         data-start-ms={line.startMs}
+                        onClick={(event) => {
+                          if (!readerSettings.tapLineToSeek) return
+                          const target = event.target as Element
+                          if (target.closest('.time, .line-share')) return
+                          reanchor(line)
+                        }}
                       >
                         <div className="line-meta">
                           <button className="time" type="button" onClick={() => reanchor(line)} aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}>

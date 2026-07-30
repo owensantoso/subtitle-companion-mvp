@@ -1433,6 +1433,19 @@ button:disabled {
   background: var(--accent);
 }
 
+.timeline-control.is-paused .playing-time > i {
+  background: transparent;
+}
+
+.timeline-control.is-synced .viewing-time {
+  color: var(--success);
+}
+
+.timeline-control.is-synced .viewing-time i {
+  border-color: var(--success);
+  background: var(--success);
+}
+
 .playing-time input {
   width: 4.4em;
   min-height: 32px;
@@ -1502,18 +1515,27 @@ button:disabled {
   pointer-events: none;
 }
 
+.timeline-control.is-paused .timeline-progress {
+  background: #915044;
+}
+
 .timeline-view-marker {
   position: absolute;
   top: 50%;
-  z-index: 1;
-  width: 22px;
-  height: 22px;
-  border: 3px solid var(--ink);
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--ink);
   border-radius: 50%;
-  background: var(--surface);
+  background: transparent;
   box-shadow: 0 0 0 2px var(--surface);
   transform: translate(-50%, -50%);
   pointer-events: none;
+}
+
+.timeline-control.is-synced .timeline-view-marker {
+  border-color: var(--success);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px rgba(127, 168, 138, 0.2);
 }
 
 .timeline-playhead {
@@ -1553,6 +1575,11 @@ button:disabled {
   transform: translate(-50%, -50%);
 }
 
+.timeline-control.is-paused .timeline-playhead > span {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
 .timeline-playhead:focus-visible > span {
   box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px rgba(242, 113, 88, 0.3);
 }
@@ -1582,7 +1609,8 @@ button:disabled {
   padding: 0;
 }
 
-.autoscroll-toggle {
+.autoscroll-toggle,
+.tap-seek-toggle {
   display: inline-flex;
   min-height: 44px;
   align-items: center;
@@ -1594,7 +1622,8 @@ button:disabled {
   font-size: 0.7rem;
 }
 
-.autoscroll-toggle small {
+.autoscroll-toggle small,
+.tap-seek-toggle small {
   color: inherit;
   font-size: 0.6rem;
   font-weight: 700;
@@ -1605,6 +1634,17 @@ button:disabled {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+.tap-seek-toggle.is-on {
+  border-color: var(--success);
+  color: var(--success);
+  background: rgba(127, 168, 138, 0.1);
+}
+
+.pip-toggle[aria-pressed="true"] {
+  border-color: var(--success);
+  color: var(--success);
 }
 
 .clock {
@@ -1694,6 +1734,10 @@ button:disabled {
 
 .subtitle-line.jump-highlight {
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.subtitle-line.is-seekable {
+  cursor: pointer;
 }
 
 .time {
@@ -2183,6 +2227,7 @@ body.reader-focus-active {
   .reader.is-focused .reader-bar > div:first-child,
   .reader.is-focused .change-subtitles,
   .reader.is-focused .copy-link,
+  .reader.is-focused .pip-toggle,
   .reader.is-focused .reader-share-status,
   .reader.is-focused .reader-preferences,
   .reader.is-focused .subtitle-search,
@@ -2335,6 +2380,10 @@ body.reader-focus-active {
   }
 
   .reader.is-focused .autoscroll-toggle {
+    min-height: 44px;
+  }
+
+  .reader.is-focused .tap-seek-toggle {
     min-height: 44px;
   }
 
