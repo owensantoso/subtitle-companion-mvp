@@ -538,6 +538,15 @@ input[type="search"]::-webkit-search-cancel-button {
   color: var(--accent);
 }
 
+.usage-note {
+  margin: 14px 0 0;
+  border-left: 2px solid var(--line-strong);
+  padding: 2px 0 2px 10px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.55;
+}
+
 .file-input {
   position: absolute;
   width: 1px;
@@ -546,6 +555,10 @@ input[type="search"]::-webkit-search-cancel-button {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   clip-path: inset(50%);
+}
+
+.video-input {
+  display: none;
 }
 
 .file-copy strong,
@@ -1207,6 +1220,108 @@ button:disabled {
   padding: 7px 18px;
   color: var(--accent);
   background: var(--accent-soft);
+  font-size: 0.68rem;
+}
+
+.video-attach.is-active {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.local-video {
+  border-bottom: 1px solid var(--line);
+  background: #0d0f0d;
+}
+
+.local-video > header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 14px;
+}
+
+.local-video > header > span:first-child,
+.local-video > header strong,
+.local-video > header small {
+  display: block;
+}
+
+.local-video > header strong {
+  color: var(--ink);
+  font-size: 0.72rem;
+}
+
+.local-video > header small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+
+.local-video-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.local-video-actions > span {
+  max-width: min(34vw, 320px);
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-video-actions button {
+  display: grid;
+  width: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  place-items: center;
+  padding: 0;
+}
+
+.video-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #050605;
+}
+
+.video-stage video {
+  display: block;
+  width: 100%;
+  max-height: min(52vh, 560px);
+  background: #050605;
+  object-fit: contain;
+}
+
+.video-subtitle {
+  position: absolute;
+  right: 18px;
+  bottom: 48px;
+  left: 18px;
+  z-index: 2;
+  margin: 0;
+  color: #fff;
+  font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+  font-size: clamp(16px, 2.2vw, 25px);
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: center;
+  text-shadow: 0 2px 5px #000, 0 0 2px #000;
+  pointer-events: none;
+}
+
+.video-error {
+  margin: 0;
+  border-top: 1px solid var(--line);
+  padding: 8px 14px;
+  color: var(--danger);
   font-size: 0.68rem;
 }
 
@@ -2479,6 +2594,11 @@ body.reader-focus-active {
     gap: 6px;
   }
 
+  .reader-actions .icon-button {
+    width: 40px;
+    min-width: 40px;
+  }
+
   .reader-actions button {
     min-height: 40px;
     padding-inline: 10px;
@@ -2526,6 +2646,7 @@ body.reader-focus-active {
   }
 
   .reader.is-focused .reader-bar > div:first-child,
+  .reader.is-focused .video-attach,
   .reader.is-focused .change-subtitles,
   .reader.is-focused .copy-link,
   .reader.is-focused .pip-toggle,
@@ -2557,6 +2678,22 @@ body.reader-focus-active {
     padding-inline: 10px;
     background: rgba(17, 20, 17, 0.92);
     font-size: 0.64rem;
+  }
+
+  .reader.is-focused .local-video {
+    flex: 0 0 auto;
+    order: 0;
+  }
+
+  .reader.is-focused .video-stage video {
+    max-height: 34dvh;
+  }
+
+  .reader.is-focused .video-subtitle {
+    right: 12px;
+    bottom: 42px;
+    left: 12px;
+    font-size: clamp(15px, 5vw, 21px);
   }
 
   .reader.is-focused .reader-tools {

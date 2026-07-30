@@ -40,6 +40,12 @@ type Tracker = {
   status: 'idle' | 'running' | 'paused'
   anchorSubtitleMs: number
   anchorClockMs: number
+  playbackRate: number
+}
+
+type LocalVideo = {
+  name: string
+  url: string
 }
 
 type SavedLookup = {
@@ -271,6 +277,10 @@ function katakanaToHiragana(text?: string) {
   return text.replace(/[\u30a1-\u30f6]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0x60))
 }
 
+function normalizeJapaneseSearchText(value: string) {
+  return katakanaToHiragana(value.normalize('NFKC').toLowerCase()) ?? ''
+}
+
 const romajiSyllables: Record<string, string> = {
   kya: 'きゃ', kyu: 'きゅ', kyo: 'きょ', sha: 'しゃ', shu: 'しゅ', sho: 'しょ',
   cha: 'ちゃ', chu: 'ちゅ', cho: 'ちょ', nya: 'にゃ', nyu: 'にゅ', nyo: 'にょ',
@@ -371,7 +381,7 @@ function tokenize(text: string, buckets: DictionaryBuckets, tokenizer: Tokenizer
 
 function virtualTime(tracker: Tracker, now = performance.now()) {
   if (tracker.status !== 'running') return tracker.anchorSubtitleMs
-  return tracker.anchorSubtitleMs + now - tracker.anchorClockMs
+  return tracker.anchorSubtitleMs + (now - tracker.anchorClockMs) * tracker.playbackRate
 }
 
 function currentSubtitle(lines: SubtitleLine[], tracker: Tracker, now = performance.now()) {
@@ -773,6 +783,15 @@ function PictureInPictureIcon() {
   )
 }
 
+function VideoIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19">
+      <rect x="3.5" y="5" width="17" height="14" rx="1" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m10 8.5 6 3.5-6 3.5z" fill="currentColor" />
+    </svg>
+  )
+}
+
 function CloseIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
@@ -827,7 +846,7 @@ function App() {
   const [url, setUrl] = useState('')
   const [lines, setLines] = useState<SubtitleLine[]>([])
   const [error, setError] = useState('')
-  const [tracker, setTracker] = useState<Tracker>({ status: 'idle', anchorSubtitleMs: 0, anchorClockMs: performance.now() })
+  const [tracker, setTracker] = useState<Tracker>({ status: 'idle', anchorSubtitleMs: 0, anchorClockMs: performance.now(), playbackRate: 1 })
   const [tick, setTick] = useState(performance.now())
   const [selectedLookup, setSelectedLookup] = useState<SelectedLookup | null>(null)
   const [readerSettings, setReaderSettings] = useState(loadReaderSettings)
@@ -859,6 +878,8 @@ function App() {
   const [focusMode, setFocusMode] = useState(false)
   const [followCurrent, setFollowCurrent] = useState(true)
   const [pictureInPictureActive, setPictureInPictureActive] = useState(false)
+  const [localVideo, setLocalVideo] = useState<LocalVideo | null>(null)
+  const [videoError, setVideoError] = useState('')
   const [importOpen, setImportOpen] = useState(true)
   const [subtitleQuery, setSubtitleQuery] = useState('')
   const [highlightedLineId, setHighlightedLineId] = useState('')
@@ -870,6 +891,9 @@ function App() {
   const liveRef = useRef<HTMLLIElement | null>(null)
   const subtitleListRef = useRef<HTMLOListElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const videoInputRef = useRef<HTMLInputElement | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const videoObjectUrlRef = useRef<string | null>(null)
   const animeSearchRef = useRef<HTMLInputElement | null>(null)
   const importCardRef = useRef<HTMLDetailsElement | null>(null)
   const readerPreferencesRef = useRef<HTMLDetailsElement | null>(null)
@@ -913,14 +937,14 @@ function App() {
   )
   const animeResults = useMemo(() => searchAnimeCatalog(animeCatalog, animeQuery), [animeCatalog, animeQuery])
   const subtitleSearchResults = useMemo(() => {
-    const query = subtitleQuery.normalize('NFKC').trim().toLowerCase()
+    const query = normalizeJapaneseSearchText(subtitleQuery.trim())
     if (!query) return []
-    const hiraganaQuery = romajiToHiragana(query)
+    const hiraganaQuery = normalizeJapaneseSearchText(romajiToHiragana(query))
     return tokenizedLines.filter(({ line, tokens }) => {
-      const japaneseAndReading = [
+      const japaneseAndReading = normalizeJapaneseSearchText([
         line.plainText,
         ...tokens.flatMap((token) => [token.surface, token.reading ?? '', token.entry?.reading ?? '']),
-      ].join(' ').normalize('NFKC').toLowerCase()
+      ].join(' '))
       const meanings = tokens.map((token) => token.entry?.meaning ?? '').join(' ').toLowerCase()
       return japaneseAndReading.includes(query)
         || (hiraganaQuery !== query && japaneseAndReading.includes(hiraganaQuery))
@@ -949,6 +973,11 @@ function App() {
     ? `Synced ${formatTime(playingTimestamp)}`
     : `Viewing ${formatTime(boundedViewedTimestamp)}–${formatTime(boundedViewedEndTimestamp)}`
   const pictureInPictureApi = (window as Window & { documentPictureInPicture?: DocumentPictureInPictureApi }).documentPictureInPicture
+  const nativePictureInPictureSupported = Boolean(
+    localVideo
+    && document.pictureInPictureEnabled
+    && 'requestPictureInPicture' in HTMLVideoElement.prototype,
+  )
 
   // State-driven moves of the marker go through the same single writer the
   // drag and scroll paths use, so the two can never disagree.
@@ -1004,6 +1033,39 @@ function App() {
     if (status) status.textContent = tracker.status === 'running' ? 'Playing' : 'Paused'
     if (progress) progress.style.width = `${playingPosition}%`
   }, [current?.plainText, pictureInPictureActive, playingPosition, playingTimestamp, timelineEnd, tracker.status])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !localVideo || typeof VTTCue === 'undefined') return
+    const track = video.textTracks[0] ?? video.addTextTrack('subtitles', 'Japanese', 'ja')
+    while (track.cues?.length) track.removeCue(track.cues[0])
+    for (const line of lines) {
+      const start = line.startMs / 1000
+      const end = Math.max(start + 0.05, line.endMs / 1000)
+      track.addCue(new VTTCue(start, end, line.plainText))
+    }
+    track.mode = document.pictureInPictureElement === video ? 'showing' : 'hidden'
+  }, [lines, localVideo])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !localVideo) return
+    const track = video.textTracks[0]
+    const handleEnterPictureInPicture = () => {
+      if (track) track.mode = 'showing'
+      setPictureInPictureActive(true)
+    }
+    const handleLeavePictureInPicture = () => {
+      if (track) track.mode = 'hidden'
+      setPictureInPictureActive(false)
+    }
+    video.addEventListener('enterpictureinpicture', handleEnterPictureInPicture)
+    video.addEventListener('leavepictureinpicture', handleLeavePictureInPicture)
+    return () => {
+      video.removeEventListener('enterpictureinpicture', handleEnterPictureInPicture)
+      video.removeEventListener('leavepictureinpicture', handleLeavePictureInPicture)
+    }
+  }, [localVideo])
 
   useEffect(() => {
     if (tracker.status === 'running' && current && followCurrent) {
@@ -1087,6 +1149,7 @@ function App() {
     if (scrollAnimationRef.current !== null) window.cancelAnimationFrame(scrollAnimationRef.current)
     if (timelineBrowseFrameRef.current !== null) window.cancelAnimationFrame(timelineBrowseFrameRef.current)
     pictureInPictureWindowRef.current?.close()
+    if (videoObjectUrlRef.current) URL.revokeObjectURL(videoObjectUrlRef.current)
   }, [])
 
   useEffect(() => {
@@ -1251,6 +1314,7 @@ function App() {
 
   function openSubtitle(name: string, text: string, recent?: Omit<RecentSubtitle, 'viewedAt'>) {
     const parsed = parseSubtitle(name, text)
+    clearLocalVideo()
     const requestedLine = pendingLineRef.current
     const anchorSubtitleMs = requestedLine === null
       ? parsed[0]?.startMs ?? 0
@@ -1266,7 +1330,7 @@ function App() {
     setViewedTimestamp(anchorSubtitleMs)
     setViewedEndTimestamp(anchorSubtitleMs)
     setFollowCurrent(true)
-    setTracker({ status: 'idle', anchorSubtitleMs, anchorClockMs: performance.now() })
+    setTracker({ status: 'idle', anchorSubtitleMs, anchorClockMs: performance.now(), playbackRate: 1 })
     setImportOpen(false)
     if (recent) {
       setActiveRecentId(recent.id)
@@ -1342,6 +1406,53 @@ function App() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not read this subtitle file.')
     }
+  }
+
+  function clearLocalVideo() {
+    const video = videoRef.current
+    video?.pause()
+    if (video && document.pictureInPictureElement === video) void document.exitPictureInPicture()
+    pictureInPictureWindowRef.current?.close()
+    pictureInPictureWindowRef.current = null
+    if (videoObjectUrlRef.current) {
+      URL.revokeObjectURL(videoObjectUrlRef.current)
+      videoObjectUrlRef.current = null
+    }
+    if (videoInputRef.current) videoInputRef.current.value = ''
+    setLocalVideo(null)
+    setVideoError('')
+    setPictureInPictureActive(false)
+  }
+
+  function handleVideoFile(file?: File) {
+    if (!file) return
+    clearLocalVideo()
+    const objectUrl = URL.createObjectURL(file)
+    videoObjectUrlRef.current = objectUrl
+    setLocalVideo({ name: file.name, url: objectUrl })
+  }
+
+  function syncTrackerFromVideo(video: HTMLVideoElement) {
+    const now = performance.now()
+    const anchorSubtitleMs = video.currentTime * 1000
+    setTracker({
+      status: video.paused || video.ended ? 'paused' : 'running',
+      anchorSubtitleMs,
+      anchorClockMs: now,
+      playbackRate: video.playbackRate,
+    })
+    setTick(now)
+  }
+
+  function handleVideoMetadata(video: HTMLVideoElement) {
+    const targetSeconds = Math.min(video.duration || 0, Math.max(0, playingTimestampRef.current / 1000))
+    if (Number.isFinite(targetSeconds)) video.currentTime = targetSeconds
+    syncTrackerFromVideo(video)
+  }
+
+  function handleVideoFailure(video: HTMLVideoElement) {
+    const mediaError = video.error
+    setVideoError(mediaError?.message || 'This browser could not play that video format.')
   }
 
   async function handleUrlLoad() {
@@ -1486,6 +1597,20 @@ function App() {
       existingWindow.close()
       pictureInPictureWindowRef.current = null
       setPictureInPictureActive(false)
+      return
+    }
+
+    const video = videoRef.current
+    if (video && document.pictureInPictureElement === video) {
+      await document.exitPictureInPicture()
+      return
+    }
+    if (video && nativePictureInPictureSupported) {
+      try {
+        await video.requestPictureInPicture()
+      } catch {
+        setShareStatus('Video Picture in Picture could not be opened in this browser.')
+      }
       return
     }
     if (!pictureInPictureApi) return
@@ -1652,11 +1777,21 @@ function App() {
   }
 
   function start() {
+    const video = videoRef.current
+    if (video) {
+      void video.play().catch(() => setVideoError('Playback was blocked. Press play on the video once to continue.'))
+      return
+    }
     setTracker((state) => ({ ...state, status: 'running', anchorClockMs: performance.now() }))
   }
 
   function pause() {
-    setTracker((state) => ({ status: 'paused', anchorSubtitleMs: virtualTime(state), anchorClockMs: performance.now() }))
+    const video = videoRef.current
+    if (video) {
+      video.pause()
+      return
+    }
+    setTracker((state) => ({ ...state, status: 'paused', anchorSubtitleMs: virtualTime(state), anchorClockMs: performance.now() }))
   }
 
   function togglePlayback() {
@@ -1670,7 +1805,12 @@ function App() {
   function reanchor(line: SubtitleLine) {
     setFollowCurrent(true)
     setViewedTimestamp(line.startMs)
-    setTracker({ status: 'running', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
+    const video = videoRef.current
+    if (video) {
+      video.currentTime = line.startMs / 1000
+      void video.play().catch(() => setVideoError('Playback was blocked. Press play on the video once to continue.'))
+    }
+    setTracker({ status: 'running', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now(), playbackRate: videoRef.current?.playbackRate ?? 1 })
     window.requestAnimationFrame(() => scrollLineIntoView(line, 'center'))
   }
 
@@ -1679,7 +1819,12 @@ function App() {
     setFollowCurrent(true)
     setViewedTimestamp(line.startMs)
     setHighlightedLineId(line.id)
-    setTracker({ status: 'paused', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now() })
+    const video = videoRef.current
+    if (video) {
+      video.pause()
+      video.currentTime = line.startMs / 1000
+    }
+    setTracker({ status: 'paused', anchorSubtitleMs: line.startMs, anchorClockMs: performance.now(), playbackRate: videoRef.current?.playbackRate ?? 1 })
   }
 
   function nearestLineAt(timestamp: number) {
@@ -1708,7 +1853,12 @@ function App() {
 
   function setPlayheadTimestamp(timestamp: number, revealLine = false) {
     const boundedTimestamp = Math.min(timelineEnd, Math.max(timelineStart, timestamp))
-    setTracker({ status: 'paused', anchorSubtitleMs: boundedTimestamp, anchorClockMs: performance.now() })
+    const video = videoRef.current
+    if (video) {
+      video.pause()
+      video.currentTime = boundedTimestamp / 1000
+    }
+    setTracker({ status: 'paused', anchorSubtitleMs: boundedTimestamp, anchorClockMs: performance.now(), playbackRate: videoRef.current?.playbackRate ?? 1 })
     if (!revealLine) return
     const nearestLine = nearestLineAt(boundedTimestamp)
     if (!nearestLine) return
@@ -2430,6 +2580,11 @@ function App() {
                   <span aria-hidden="true">·</span>
                   <a href="https://kitsunekko.net/dirlist.php?dir=subtitles%2Fjapanese%2F" target="_blank" rel="noreferrer">Kitsunekko</a>
                 </p>
+                <p className="usage-note">
+                  For language study. Files you choose are processed locally in your browser and are not uploaded.
+                  Search results reference third-party subtitle directories; this site does not control their content.
+                  Only open subtitles and media you have the right to use.
+                </p>
 
                 {error ? <p className="error" role="alert">{error}</p> : null}
                 <div className="system-status" aria-live="polite">
@@ -2459,14 +2614,32 @@ function App() {
                     <p>{lines.length} subtitle lines</p>
                   </div>
                   <div className="reader-actions">
+                    <input
+                      ref={videoInputRef}
+                      className="file-input video-input"
+                      type="file"
+                      accept="video/*,.mkv"
+                      aria-hidden="true"
+                      tabIndex={-1}
+                      onChange={(event) => handleVideoFile(event.target.files?.[0])}
+                    />
+                    <button
+                      className={localVideo ? 'secondary icon-button video-attach is-active' : 'secondary icon-button video-attach'}
+                      type="button"
+                      aria-label={localVideo ? 'Replace local video' : 'Attach local video'}
+                      title={localVideo ? 'Replace local video' : 'Attach local video (experimental)'}
+                      onClick={() => videoInputRef.current?.click()}
+                    >
+                      <VideoIcon />
+                    </button>
                     <button className="secondary icon-button change-subtitles" type="button" aria-label="Change subtitles" title="Change subtitles" onClick={openSubtitleChooser}>
                       <ChangeSubtitleIcon />
                     </button>
                     <button className="secondary icon-button copy-link" type="button" aria-label="Copy subtitle link" title="Copy link" onClick={() => void copyReaderLink()}>
                       <LinkIcon />
                     </button>
-                    {pictureInPictureApi ? (
-                      <button className="secondary icon-button pip-toggle" type="button" aria-pressed={pictureInPictureActive} aria-label={pictureInPictureActive ? 'Close subtitle Picture in Picture' : 'Open subtitle Picture in Picture'} title="Subtitle Picture in Picture" onClick={() => void togglePictureInPicture()}>
+                    {pictureInPictureApi || nativePictureInPictureSupported ? (
+                      <button className="secondary icon-button pip-toggle" type="button" aria-pressed={pictureInPictureActive} aria-label={pictureInPictureActive ? 'Close Picture in Picture' : `Open ${localVideo ? 'video' : 'subtitle'} Picture in Picture`} title={`${localVideo ? 'Video' : 'Subtitle'} Picture in Picture`} onClick={() => void togglePictureInPicture()}>
                         <PictureInPictureIcon />
                       </button>
                     ) : null}
@@ -2507,6 +2680,46 @@ function App() {
                   </nav>
                 ) : null}
                 {shareStatus ? <p className="reader-share-status" aria-live="polite">{shareStatus}</p> : null}
+
+                {localVideo ? (
+                  <section className="local-video" aria-label="Local video player">
+                    <header>
+                      <span>
+                        <strong>Local video</strong>
+                        <small>Experimental · stays in this browser session</small>
+                      </span>
+                      <span className="local-video-actions">
+                        <span title={localVideo.name}>{localVideo.name}</span>
+                        <button className="text-button" type="button" onClick={clearLocalVideo} aria-label="Remove local video">
+                          <CloseIcon />
+                        </button>
+                      </span>
+                    </header>
+                    <div className="video-stage">
+                      <video
+                        ref={videoRef}
+                        src={localVideo.url}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        onLoadedMetadata={(event) => handleVideoMetadata(event.currentTarget)}
+                        onPlay={(event) => {
+                          setVideoError('')
+                          syncTrackerFromVideo(event.currentTarget)
+                        }}
+                        onPause={(event) => syncTrackerFromVideo(event.currentTarget)}
+                        onEnded={(event) => syncTrackerFromVideo(event.currentTarget)}
+                        onTimeUpdate={(event) => syncTrackerFromVideo(event.currentTarget)}
+                        onSeeking={(event) => syncTrackerFromVideo(event.currentTarget)}
+                        onSeeked={(event) => syncTrackerFromVideo(event.currentTarget)}
+                        onRateChange={(event) => syncTrackerFromVideo(event.currentTarget)}
+                        onError={(event) => handleVideoFailure(event.currentTarget)}
+                      />
+                      <p className="video-subtitle" lang="ja">{current?.plainText ?? 'Waiting for the next subtitle…'}</p>
+                    </div>
+                    {videoError ? <p className="video-error" role="alert">{videoError}</p> : null}
+                  </section>
+                ) : null}
 
                 <details ref={readerPreferencesRef} className="reader-preferences">
                   <summary>Display settings</summary>
