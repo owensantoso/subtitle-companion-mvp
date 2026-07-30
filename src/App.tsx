@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import kuromoji from 'kuromoji/build/kuromoji.js'
 import type { IpadicFeatures, Tokenizer } from 'kuromoji'
 import {
@@ -731,6 +732,86 @@ function LookupEntry({
   )
 }
 
+function PictureInPictureReader({
+  context,
+  currentLineId,
+  selectedLookup,
+  playingTimestamp,
+  timelineEnd,
+  playingPosition,
+  trackerStatus,
+  favoriteSurfaces,
+  lookedUpSurfaces,
+  onTokenSelect,
+  onToggleFavorite,
+  onCloseLookup,
+}: {
+  context: { line: SubtitleLine; tokens: Token[] }[]
+  currentLineId?: string
+  selectedLookup: SelectedLookup | null
+  playingTimestamp: number
+  timelineEnd: number
+  playingPosition: number
+  trackerStatus: Tracker['status']
+  favoriteSurfaces: Set<string>
+  lookedUpSurfaces: Set<string>
+  onTokenSelect: (token: Token, line: SubtitleLine) => void
+  onToggleFavorite: (lookup: SavedLookup) => void
+  onCloseLookup: () => void
+}) {
+  const lookupIsSaved = selectedLookup ? favoriteSurfaces.has(selectedLookup.lookup.surface) : false
+
+  return (
+    <main className="pip-reader">
+      <section className="pip-context" aria-label="Nearby subtitles">
+        {context.map(({ line, tokens }) => (
+          <article className={line.id === currentLineId ? 'pip-line is-current' : 'pip-line'} key={line.id}>
+            <time>{formatTime(line.startMs)}</time>
+            <p lang="ja">
+              {tokens.map((token) => (
+                !/[\p{Letter}\p{Number}]/u.test(token.surface) ? <span key={token.id}>{token.surface}</span> :
+                <button
+                  className={favoriteSurfaces.has(token.surface) ? 'pip-token is-saved-word' : lookedUpSurfaces.has(token.surface) ? 'pip-token is-looked-up' : 'pip-token'}
+                  key={token.id}
+                  type="button"
+                  onClick={() => onTokenSelect(token, line)}
+                >
+                  {token.hasKanji && token.reading ? <ruby>{token.surface}<rt>{token.reading}</rt></ruby> : token.surface}
+                </button>
+              ))}
+            </p>
+          </article>
+        ))}
+      </section>
+
+      <footer className="pip-timeline">
+        <span className={trackerStatus === 'running' ? 'is-playing' : 'is-paused'}><i aria-hidden="true" />{trackerStatus === 'running' ? 'Playing' : 'Paused'} {formatTime(playingTimestamp)}</span>
+        <span>{formatTime(timelineEnd)}</span>
+        <div className="pip-track"><span style={{ width: `${playingPosition}%` }} /></div>
+      </footer>
+
+      {selectedLookup ? (
+        <aside className="pip-lookup" role="dialog" aria-label={`Dictionary lookup for ${selectedLookup.token.surface}`}>
+          <button className="pip-lookup-close" type="button" onClick={onCloseLookup} aria-label="Close dictionary lookup">×</button>
+          <p className="pip-lookup-label">Lookup</p>
+          <h2>{selectedLookup.token.surface}</h2>
+          {selectedLookup.lookup.reading ? <p className="pip-reading">{selectedLookup.lookup.reading}</p> : null}
+          <p className="pip-meaning">{selectedLookup.lookup.meaning}</p>
+          <button
+            className={lookupIsSaved ? 'pip-save is-saved' : 'pip-save'}
+            type="button"
+            aria-pressed={lookupIsSaved}
+            onClick={() => onToggleFavorite(selectedLookup.lookup)}
+          >
+            <StarIcon filled={lookupIsSaved} />
+            {lookupIsSaved ? 'Saved' : 'Save word'}
+          </button>
+        </aside>
+      ) : null}
+    </main>
+  )
+}
+
 function SearchIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
@@ -878,6 +959,8 @@ function App() {
   const [focusMode, setFocusMode] = useState(false)
   const [followCurrent, setFollowCurrent] = useState(true)
   const [pictureInPictureActive, setPictureInPictureActive] = useState(false)
+  const [pictureInPicturePortalRoot, setPictureInPicturePortalRoot] = useState<HTMLElement | null>(null)
+  const [videoInDocumentPictureInPicture, setVideoInDocumentPictureInPicture] = useState(false)
   const [localVideo, setLocalVideo] = useState<LocalVideo | null>(null)
   const [videoError, setVideoError] = useState('')
   const [importOpen, setImportOpen] = useState(true)
@@ -893,6 +976,7 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const videoInputRef = useRef<HTMLInputElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const videoStageRef = useRef<HTMLDivElement | null>(null)
   const videoObjectUrlRef = useRef<string | null>(null)
   const animeSearchRef = useRef<HTMLInputElement | null>(null)
   const importCardRef = useRef<HTMLDetailsElement | null>(null)
@@ -935,6 +1019,13 @@ function App() {
     () => current ? tokenizedLines.find(({ line }) => line.id === current.id) : undefined,
     [current, tokenizedLines],
   )
+  const pictureInPictureContext = useMemo(() => {
+    if (tokenizedLines.length === 0) return []
+    const currentIndex = current ? tokenizedLines.findIndex(({ line }) => line.id === current.id) : 0
+    const boundedIndex = currentIndex >= 0 ? currentIndex : 0
+    const start = Math.max(0, Math.min(tokenizedLines.length - 3, boundedIndex - 1))
+    return tokenizedLines.slice(start, start + 3)
+  }, [current, tokenizedLines])
   const animeResults = useMemo(() => searchAnimeCatalog(animeCatalog, animeQuery), [animeCatalog, animeQuery])
   const subtitleSearchResults = useMemo(() => {
     const query = normalizeJapaneseSearchText(subtitleQuery.trim())
@@ -1019,20 +1110,6 @@ function App() {
     }, 250)
     return () => window.clearInterval(id)
   }, [tracker.status])
-
-  useEffect(() => {
-    if (!pictureInPictureActive) return
-    const pipWindow = pictureInPictureWindowRef.current
-    if (!pipWindow || pipWindow.closed) return
-    const subtitle = pipWindow.document.querySelector<HTMLElement>('[data-pip-subtitle]')
-    const time = pipWindow.document.querySelector<HTMLElement>('[data-pip-time]')
-    const status = pipWindow.document.querySelector<HTMLElement>('[data-pip-status]')
-    const progress = pipWindow.document.querySelector<HTMLElement>('[data-pip-progress]')
-    if (subtitle) subtitle.textContent = current?.plainText ?? 'Waiting for the next subtitle…'
-    if (time) time.textContent = `${formatTime(playingTimestamp)} / ${formatTime(timelineEnd)}`
-    if (status) status.textContent = tracker.status === 'running' ? 'Playing' : 'Paused'
-    if (progress) progress.style.width = `${playingPosition}%`
-  }, [current?.plainText, pictureInPictureActive, playingPosition, playingTimestamp, timelineEnd, tracker.status])
 
   useEffect(() => {
     const video = videoRef.current
@@ -1412,8 +1489,13 @@ function App() {
     const video = videoRef.current
     video?.pause()
     if (video && document.pictureInPictureElement === video) void document.exitPictureInPicture()
+    if (video && videoStageRef.current && video.parentElement !== videoStageRef.current) {
+      videoStageRef.current.prepend(video)
+    }
     pictureInPictureWindowRef.current?.close()
     pictureInPictureWindowRef.current = null
+    setPictureInPicturePortalRoot(null)
+    setVideoInDocumentPictureInPicture(false)
     if (videoObjectUrlRef.current) {
       URL.revokeObjectURL(videoObjectUrlRef.current)
       videoObjectUrlRef.current = null
@@ -1594,8 +1676,14 @@ function App() {
   async function togglePictureInPicture() {
     const existingWindow = pictureInPictureWindowRef.current
     if (existingWindow && !existingWindow.closed) {
+      const video = videoRef.current
+      if (video && videoStageRef.current && video.parentElement !== videoStageRef.current) {
+        videoStageRef.current.prepend(video)
+      }
       existingWindow.close()
       pictureInPictureWindowRef.current = null
+      setPictureInPicturePortalRoot(null)
+      setVideoInDocumentPictureInPicture(false)
       setPictureInPictureActive(false)
       return
     }
@@ -1605,61 +1693,96 @@ function App() {
       await document.exitPictureInPicture()
       return
     }
-    if (video && nativePictureInPictureSupported) {
+    // Product contract: interactive subtitles and lookups are part of PiP.
+    // Prefer Document PiP whenever it exists; native video-only PiP is fallback.
+    if (pictureInPictureApi) {
       try {
-        await video.requestPictureInPicture()
-      } catch {
-        setShareStatus('Video Picture in Picture could not be opened in this browser.')
-      }
-      return
-    }
-    if (!pictureInPictureApi) return
-
-    try {
-      const pipWindow = await pictureInPictureApi.requestWindow({ width: 420, height: 220 })
-      const style = pipWindow.document.createElement('style')
-      style.textContent = `
+        const pipWindow = await pictureInPictureApi.requestWindow({ width: 480, height: localVideo ? 620 : 360 })
+        const style = pipWindow.document.createElement('style')
+        style.textContent = `
         :root { color-scheme: dark; }
         * { box-sizing: border-box; }
         body {
-          display: grid;
-          min-height: 100vh;
           margin: 0;
-          padding: 20px;
           color: #f1efe7;
           background: #101210;
           font-family: "Avenir Next", Avenir, "Hiragino Sans", sans-serif;
+          overflow: hidden;
         }
-        main { display: grid; align-content: space-between; gap: 18px; }
-        .status { display: flex; justify-content: space-between; color: #a5a79f; font: 600 13px ui-monospace, monospace; }
-        .status span:first-child { color: #7fa88a; }
-        .subtitle {
-          margin: 0;
-          font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
-          font-size: clamp(24px, 8vw, 38px);
-          font-weight: 600;
-          line-height: 1.4;
+        button { font: inherit; }
+        .pip-shell { display: grid; grid-template-rows: ${localVideo ? 'minmax(150px, 52vh)' : ''} minmax(0, 1fr); height: 100vh; }
+        .pip-video-host { display: ${localVideo ? 'grid' : 'none'}; min-height: 0; place-items: center; background: #050605; }
+        .pip-video-host video { width: 100%; height: 100%; max-height: 52vh; object-fit: contain; background: #050605; }
+        .pip-root { min-height: 0; }
+        .pip-reader { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 100%; border-top: 1px solid #30332f; background: #121512; }
+        .pip-context { display: grid; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+        .pip-line { display: grid; grid-template-columns: 42px 1fr; align-items: center; gap: 8px; padding: 9px 13px; border-bottom: 1px solid #292c29; color: #7f827c; }
+        .pip-line.is-current { color: #f3f0e8; background: #181c18; box-shadow: inset 3px 0 #7fa88a; }
+        .pip-line time { align-self: start; padding-top: 10px; color: #858982; font: 600 11px ui-monospace, monospace; }
+        .pip-line p { margin: 0; font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; font-size: clamp(17px, 4.4vw, 27px); font-weight: 600; line-height: 1.75; }
+        .pip-line.is-current p { font-size: clamp(20px, 5.3vw, 32px); }
+        .pip-token { appearance: none; margin: 0; border: 0; padding: 1px 0; color: inherit; background: transparent; cursor: pointer; }
+        .pip-token:hover, .pip-token:focus-visible { color: #fff; outline: 1px solid #7fa88a; outline-offset: 2px; }
+        .pip-token.is-looked-up { color: #82b7c4; }
+        .pip-token.is-saved-word { color: #d3a656; }
+        ruby rt { color: #ed735b; font-family: "Avenir Next", Avenir, sans-serif; font-size: .42em; font-weight: 700; }
+        .pip-timeline { display: grid; grid-template-columns: 1fr auto; gap: 7px; padding: 10px 13px 12px; border-top: 1px solid #30332f; color: #a5a79f; font: 600 11px ui-monospace, monospace; }
+        .pip-timeline > span.is-playing { color: #7fa88a; }
+        .pip-timeline > span.is-paused { color: #ed735b; }
+        .pip-timeline i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: currentColor; }
+        .pip-track { grid-column: 1 / -1; height: 5px; overflow: hidden; border-radius: 999px; background: #343734; }
+        .pip-track span { display: block; height: 100%; background: #ed735b; }
+        .pip-lookup { position: absolute; right: 10px; bottom: 42px; left: 10px; z-index: 4; max-height: calc(100% - 55px); overflow: auto; border: 1px solid #6a6e67; padding: 15px; color: #f3f0e8; background: #171a17; box-shadow: 0 12px 35px #000b; }
+        .pip-lookup-close { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border: 0; color: #a9aca5; background: transparent; cursor: pointer; font-size: 24px; }
+        .pip-lookup-label { margin: 0 0 8px; color: #ed735b; font-size: 10px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+        .pip-lookup h2 { margin: 0; font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; font-size: 32px; }
+        .pip-reading { margin: 4px 0 10px; color: #ed735b; font-weight: 700; }
+        .pip-meaning { margin: 0 0 14px; color: #d8d7d0; line-height: 1.45; }
+        .pip-save { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #777b74; padding: 8px 11px; color: #eeeae1; background: transparent; cursor: pointer; }
+        .pip-save.is-saved { border-color: #d3a656; color: #d3a656; }
+        .pip-save svg { width: 16px; height: 16px; }
+      `
+        pipWindow.document.head.append(style)
+        pipWindow.document.body.innerHTML = `
+        <div class="pip-shell">
+          <div class="pip-video-host"></div>
+          <div class="pip-root"></div>
+        </div>
+      `
+        const portalRoot = pipWindow.document.querySelector<HTMLElement>('.pip-root')
+        const videoHost = pipWindow.document.querySelector<HTMLElement>('.pip-video-host')
+        if (!portalRoot) throw new Error('Picture in Picture root was not created.')
+        if (video && videoHost) {
+          videoHost.append(video)
+          setVideoInDocumentPictureInPicture(true)
         }
-        .track { height: 6px; overflow: hidden; border-radius: 999px; background: #323432; }
-        .progress { display: block; width: 0; height: 100%; background: #ed735b; }
-      `
-      pipWindow.document.head.append(style)
-      pipWindow.document.body.innerHTML = `
-        <main>
-          <div class="status"><span data-pip-status>Paused</span><span data-pip-time>0:00 / 0:00</span></div>
-          <p class="subtitle" data-pip-subtitle>Waiting for the next subtitle…</p>
-          <div class="track"><span class="progress" data-pip-progress></span></div>
-        </main>
-      `
-      pictureInPictureWindowRef.current = pipWindow
-      setPictureInPictureActive(true)
-      pipWindow.addEventListener('pagehide', () => {
-        if (pictureInPictureWindowRef.current !== pipWindow) return
-        pictureInPictureWindowRef.current = null
-        setPictureInPictureActive(false)
-      }, { once: true })
-    } catch {
-      setShareStatus('Picture in Picture could not be opened in this browser.')
+        pictureInPictureWindowRef.current = pipWindow
+        setPictureInPicturePortalRoot(portalRoot)
+        setPictureInPictureActive(true)
+        pipWindow.addEventListener('pagehide', () => {
+          if (video && videoStageRef.current && video.parentElement !== videoStageRef.current) {
+            videoStageRef.current.prepend(video)
+          }
+          if (pictureInPictureWindowRef.current !== pipWindow) return
+          pictureInPictureWindowRef.current = null
+          setPictureInPicturePortalRoot(null)
+          setVideoInDocumentPictureInPicture(false)
+          setPictureInPictureActive(false)
+        }, { once: true })
+        return
+      } catch {
+        setShareStatus('Interactive Picture in Picture could not be opened in this browser.')
+        return
+      }
+    }
+
+    if (video && nativePictureInPictureSupported) {
+      try {
+        await video.requestPictureInPicture()
+        setShareStatus('This browser only supports video-only Picture in Picture; word lookup stays in the main window.')
+      } catch {
+        setShareStatus('Video Picture in Picture could not be opened in this browser.')
+      }
     }
   }
 
@@ -2695,7 +2818,7 @@ function App() {
                         </button>
                       </span>
                     </header>
-                    <div className="video-stage">
+                    <div ref={videoStageRef} className={videoInDocumentPictureInPicture ? 'video-stage is-in-document-pip' : 'video-stage'}>
                       <video
                         ref={videoRef}
                         src={localVideo.url}
@@ -2715,6 +2838,7 @@ function App() {
                         onRateChange={(event) => syncTrackerFromVideo(event.currentTarget)}
                         onError={(event) => handleVideoFailure(event.currentTarget)}
                       />
+                      {videoInDocumentPictureInPicture ? <p className="video-pip-placeholder">Playing with interactive subtitles in Picture in Picture</p> : null}
                       <p className="video-subtitle" lang="ja">{current?.plainText ?? 'Waiting for the next subtitle…'}</p>
                     </div>
                     {videoError ? <p className="video-error" role="alert">{videoError}</p> : null}
@@ -3241,7 +3365,7 @@ function App() {
         </button>
       </nav>
 
-      {selectedLookup ? (
+      {selectedLookup && !pictureInPicturePortalRoot ? (
         <aside className="lookup" role="dialog" aria-label="Dictionary lookup">
           <button className="close" type="button" onClick={() => setSelectedLookup(null)} aria-label="Close dictionary lookup">Close</button>
           <p className="eyebrow">Lookup</p>
@@ -3269,6 +3393,24 @@ function App() {
             {isFavorite(selectedLookup.lookup) ? 'Saved word' : 'Save word'}
           </button>
         </aside>
+      ) : null}
+
+      {pictureInPicturePortalRoot ? createPortal(
+        <PictureInPictureReader
+          context={pictureInPictureContext}
+          currentLineId={current?.id}
+          selectedLookup={selectedLookup}
+          playingTimestamp={playingTimestamp}
+          timelineEnd={timelineEnd}
+          playingPosition={playingPosition}
+          trackerStatus={tracker.status}
+          favoriteSurfaces={favoriteSurfaces}
+          lookedUpSurfaces={lookedUpSurfaces}
+          onTokenSelect={handleTokenSelect}
+          onToggleFavorite={toggleFavorite}
+          onCloseLookup={() => setSelectedLookup(null)}
+        />,
+        pictureInPicturePortalRoot,
       ) : null}
 
       {clearConfirmOpen ? (

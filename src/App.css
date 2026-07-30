@@ -1300,6 +1300,24 @@ button:disabled {
   object-fit: contain;
 }
 
+.video-stage.is-in-document-pip {
+  min-height: 180px;
+}
+
+.video-pip-placeholder {
+  max-width: 320px;
+  margin: 0;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.video-stage.is-in-document-pip .video-subtitle {
+  display: none;
+}
+
 .video-subtitle {
   position: absolute;
   right: 18px;
