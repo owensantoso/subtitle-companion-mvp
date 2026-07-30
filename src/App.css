@@ -642,8 +642,8 @@ select {
 }
 
 button:hover {
-  border-color: #ff8a71;
-  background: #ff8a71;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 button:disabled {
@@ -1568,6 +1568,15 @@ button:disabled {
   pointer-events: none;
 }
 
+/*
+ * While a gesture is driving the marker it must land where it is put, in the
+ * same frame. Easing here is what made dragging feel jittery and scrolling
+ * feel like the pill lagged behind the transcript.
+ */
+.timeline-view-marker[data-live] {
+  transition: border-color 160ms ease-out;
+}
+
 .timeline-control.is-synced .timeline-view-marker {
   width: 26px;
   height: 26px;
@@ -1792,9 +1801,9 @@ button:disabled {
 }
 
 .tap-seek-toggle.is-on {
-  border-color: var(--success);
-  color: var(--success);
-  background: rgba(127, 168, 138, 0.1);
+  border-color: color-mix(in srgb, var(--ink) 45%, transparent);
+  color: var(--ink);
+  background: rgba(241, 239, 231, 0.08);
 }
 
 .control-with-tooltip {
@@ -1999,7 +2008,7 @@ button:disabled {
 }
 
 rt {
-  color: var(--accent);
+  color: inherit;
   font-family: "Hiragino Sans", "Yu Gothic", sans-serif;
   font-size: 0.42em;
   font-weight: 700;

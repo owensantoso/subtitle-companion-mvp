@@ -788,6 +788,8 @@ function App() {
   const timelinePreviewLinesRef = useRef<HTMLDivElement | null>(null)
   const timelineHoverIndicatorRef = useRef<HTMLSpanElement | null>(null)
   const timelinePreviewLineIndexRef = useRef<number | null>(null)
+  const viewedSyncFrameRef = useRef<number | null>(null)
+  const scrollSettleTimerRef = useRef<number | null>(null)
   const playingTimestampRef = useRef(0)
   const followCurrentRef = useRef(true)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
@@ -819,6 +821,8 @@ function App() {
   }, [subtitleQuery, tokenizedLines])
   const previousEpisodeFile = useMemo(() => adjacentSubtitleFile(subtitleFiles, activeSubtitleFile, -1), [activeSubtitleFile, subtitleFiles])
   const nextEpisodeFile = useMemo(() => adjacentSubtitleFile(subtitleFiles, activeSubtitleFile, 1), [activeSubtitleFile, subtitleFiles])
+  /** Locked playback keeps every browsing gesture from moving the playhead. */
+  const isPlaybackLocked = !readerSettings.tapLineToSeek
   const timelineStart = lines[0]?.startMs ?? 0
   const timelineEnd = lines.at(-1)?.endMs ?? 0
   const playingTimestamp = Math.min(timelineEnd, Math.max(timelineStart, virtualTime(tracker, tick)))
@@ -833,11 +837,17 @@ function App() {
   const displayedViewedPosition = followCurrent ? playingPosition : (viewedPosition + viewedEndPosition) / 2
   const displayedViewedWidth = followCurrent ? 0 : Math.max(0, viewedEndPosition - viewedPosition)
   const displayedViewedInset = followCurrent ? 13 : 19
-  const displayedViewedLeft = `clamp(${displayedViewedInset}px, ${displayedViewedPosition}%, calc(100% - ${displayedViewedInset}px))`
   const displayedViewedLabel = followCurrent
     ? `Synced ${formatTime(playingTimestamp)}`
     : `Viewing ${formatTime(boundedViewedTimestamp)}–${formatTime(boundedViewedEndTimestamp)}`
   const pictureInPictureApi = (window as Window & { documentPictureInPicture?: DocumentPictureInPictureApi }).documentPictureInPicture
+
+  // State-driven moves of the marker go through the same single writer the
+  // drag and scroll paths use, so the two can never disagree.
+  useEffect(() => {
+    if (timelineDraggingRef.current || playheadDraggingRef.current) return
+    applyViewMarkerStyle(displayedViewedPosition, displayedViewedWidth, displayedViewedInset)
+  }, [displayedViewedInset, displayedViewedPosition, displayedViewedWidth])
 
   useEffect(() => {
     suggestionRefs.current[activeSuggestionIndex]?.scrollIntoView({ block: 'nearest' })
@@ -1665,7 +1675,7 @@ function App() {
     event.preventDefault()
     timelineDraggingRef.current = true
     timelineBoundsRef.current = event.currentTarget.parentElement?.getBoundingClientRect() ?? null
-    if (timelineViewMarkerRef.current) timelineViewMarkerRef.current.style.transition = 'none'
+    setViewMarkerLive(true)
     event.currentTarget.setPointerCapture(event.pointerId)
     hideTimelinePreview()
     browseToTimestamp(timestampAtPosition(event.clientX, event.currentTarget), false)
@@ -1697,11 +1707,7 @@ function App() {
     browseToTimestamp(timestampAtPosition(event.clientX, event.currentTarget), false)
     renderViewportDrag()
     timelineBoundsRef.current = null
-    window.requestAnimationFrame(() => {
-      timelineViewMarkerRef.current?.style.removeProperty('transition')
-      timelineViewMarkerRef.current?.style.removeProperty('width')
-      timelineViewMarkerRef.current?.style.removeProperty('height')
-    })
+    setViewMarkerLive(false)
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
@@ -1720,6 +1726,9 @@ function App() {
   function handlePlayheadPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault()
     event.stopPropagation()
+    // Locked playback means the playhead cannot be dragged out of sync while
+    // the reader scrolls around the transcript.
+    if (isPlaybackLocked) return
     playheadPointerStartRef.current = { x: event.clientX, y: event.clientY, startedAt: performance.now() }
     playheadDraggingRef.current = false
     playheadFollowOnDragRef.current = followCurrentRef.current
@@ -1734,7 +1743,7 @@ function App() {
       const distance = Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y)
       if (distance < 6) return
       playheadDraggingRef.current = true
-      if (timelineViewMarkerRef.current) timelineViewMarkerRef.current.style.transition = 'none'
+      setViewMarkerLive(true)
     }
     const timestamp = timestampAtPosition(event.clientX, event.currentTarget)
     renderPlayheadDrag(timestamp)
@@ -1754,7 +1763,7 @@ function App() {
     playheadPointerStartRef.current = null
     playheadDraggingRef.current = false
     timelineBoundsRef.current = null
-    timelineViewMarkerRef.current?.style.removeProperty('transition')
+    setViewMarkerLive(false)
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
@@ -1769,15 +1778,14 @@ function App() {
     const position = ((boundedTimestamp - timelineStart) / timelineDuration) * 100
     if (timelineProgressRef.current) timelineProgressRef.current.style.width = `${position}%`
     if (timelinePlayheadRef.current) timelinePlayheadRef.current.style.left = `clamp(13px, ${position}%, calc(100% - 13px))`
-    if (playheadFollowOnDragRef.current && timelineViewMarkerRef.current) {
-      timelineViewMarkerRef.current.style.left = `clamp(13px, ${position}%, calc(100% - 13px))`
-    }
+    if (playheadFollowOnDragRef.current) applyViewMarkerStyle(position, 0, 13)
     const input = timelineControlRef.current?.querySelector<HTMLInputElement>('.playing-time input')
     if (input) input.value = formatTime(boundedTimestamp)
     if (playheadFollowOnDragRef.current) setViewingLabel(`Synced ${formatTime(boundedTimestamp)}`)
   }
 
   function handlePlayheadKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (isPlaybackLocked) return
     const step = event.shiftKey ? 30_000 : 5_000
     let nextTimestamp: number | undefined
     if (event.key === 'ArrowLeft') nextTimestamp = playingTimestamp - step
@@ -1808,19 +1816,54 @@ function App() {
     return { startMs, endMs }
   }
 
+  /**
+   * The only writer of the view marker's position. React does not style it,
+   * because a re-render landing mid-drag used to overwrite these values and
+   * the two writers fought each other a frame at a time.
+   */
+  function applyViewMarkerStyle(position: number, width: number, inset: number) {
+    const marker = timelineViewMarkerRef.current
+    if (!marker) return
+    marker.style.left = `clamp(${inset}px, ${position}%, calc(100% - ${inset}px))`
+    marker.style.setProperty('--view-range-width', `${width}%`)
+  }
+
+  /** Suppresses the marker's easing while a gesture is driving it directly. */
+  function setViewMarkerLive(isLive: boolean) {
+    const marker = timelineViewMarkerRef.current
+    if (!marker) return
+    if (isLive) marker.dataset.live = 'true'
+    else delete marker.dataset.live
+  }
+
   function renderViewportDrag() {
     const range = visibleTranscriptRange()
-    const marker = timelineViewMarkerRef.current
-    if (!range || !marker) return
+    if (!range) return
     const startPosition = ((range.startMs - timelineStart) / timelineDuration) * 100
     const endPosition = ((range.endMs - timelineStart) / timelineDuration) * 100
-    const center = (startPosition + endPosition) / 2
-    const width = Math.max(0, endPosition - startPosition)
-    marker.style.left = `clamp(19px, ${center}%, calc(100% - 19px))`
-    marker.style.setProperty('--view-range-width', `${width}%`)
-    marker.style.width = `max(38px, ${width}%)`
-    marker.style.height = '18px'
+    applyViewMarkerStyle(
+      (startPosition + endPosition) / 2,
+      Math.max(0, endPosition - startPosition),
+      19,
+    )
     setViewingLabel(`Viewing ${formatTime(range.startMs)}–${formatTime(range.endMs)}`)
+  }
+
+  function handleTranscriptScroll() {
+    setViewMarkerLive(true)
+    renderViewportDrag()
+
+    if (viewedSyncFrameRef.current !== null) return
+    viewedSyncFrameRef.current = window.requestAnimationFrame(() => {
+      viewedSyncFrameRef.current = null
+      updateViewedPosition()
+    })
+
+    if (scrollSettleTimerRef.current !== null) window.clearTimeout(scrollSettleTimerRef.current)
+    scrollSettleTimerRef.current = window.setTimeout(() => {
+      scrollSettleTimerRef.current = null
+      setViewMarkerLive(false)
+    }, 140)
   }
 
   function updateViewedPosition() {
@@ -2485,9 +2528,7 @@ function App() {
                         onPointerCancel={() => {
                           timelineDraggingRef.current = false
                           timelineBoundsRef.current = null
-                          timelineViewMarkerRef.current?.style.removeProperty('transition')
-                          timelineViewMarkerRef.current?.style.removeProperty('width')
-                          timelineViewMarkerRef.current?.style.removeProperty('height')
+                          setViewMarkerLive(false)
                           if (timelineBrowseFrameRef.current !== null) {
                             window.cancelAnimationFrame(timelineBrowseFrameRef.current)
                             timelineBrowseFrameRef.current = null
@@ -2503,10 +2544,6 @@ function App() {
                         <span
                           ref={timelineViewMarkerRef}
                           className="timeline-view-marker"
-                          style={{
-                            left: displayedViewedLeft,
-                            '--view-range-width': `${displayedViewedWidth}%`,
-                          } as CSSProperties}
                           aria-hidden="true"
                         />
                       </button>
@@ -2539,7 +2576,7 @@ function App() {
                           playheadPointerStartRef.current = null
                           playheadDraggingRef.current = false
                           timelineBoundsRef.current = null
-                          timelineViewMarkerRef.current?.style.removeProperty('transition')
+                          setViewMarkerLive(false)
                         }}
                         onKeyDown={handlePlayheadKey}
                       >
@@ -2602,7 +2639,7 @@ function App() {
                     readerSettings.dimInactive ? 'dim-inactive' : '',
                     `density-${readerSettings.density}`,
                   ].filter(Boolean).join(' ')}
-                  onScroll={updateViewedPosition}
+                  onScroll={handleTranscriptScroll}
                   onTouchMove={stopFollowingForBrowse}
                   onWheel={stopFollowingForBrowse}
                 >
@@ -2629,7 +2666,13 @@ function App() {
                         }}
                       >
                         <div className="line-meta">
-                          <button className="time" type="button" onClick={() => reanchor(line)} aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}>
+                          <button
+                            className="time"
+                            type="button"
+                            disabled={isPlaybackLocked}
+                            onClick={() => reanchor(line)}
+                            aria-label={`Re-anchor playback at ${formatTime(line.startMs)}`}
+                          >
                             {formatTime(line.startMs)}
                           </button>
                         </div>
