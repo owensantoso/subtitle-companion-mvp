@@ -856,6 +856,35 @@ button:disabled {
   padding: 24px;
 }
 
+.history-panel {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--history-accent) 72%, transparent);
+}
+
+.favorite-words {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--saved-accent) 76%, transparent);
+}
+
+.history-panel .section-number,
+.history-panel .saved-reading {
+  color: var(--history-accent);
+}
+
+.favorite-words .section-number,
+.favorite-words .saved-reading,
+.favorite-words .saved-word strong {
+  color: var(--saved-accent);
+}
+
+.history-panel .saved-count {
+  color: var(--history-accent);
+  background: var(--history-soft);
+}
+
+.favorite-words .saved-count {
+  color: var(--saved-accent);
+  background: var(--saved-soft);
+}
+
 .saved-lookups-header {
   display: flex;
   align-items: center;
@@ -1080,11 +1109,16 @@ button:disabled {
 }
 
 .star-button:hover,
-.star-button:focus-visible,
-.star-button.is-saved {
+.star-button:focus-visible {
   border-color: transparent;
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+.star-button.is-saved {
+  border-color: transparent;
+  color: var(--saved-accent);
+  background: var(--saved-soft);
 }
 
 .saved-check input {
@@ -1481,7 +1515,7 @@ button:disabled {
   padding: 0;
   background: transparent;
   cursor: pointer;
-  touch-action: manipulation;
+  touch-action: none;
 }
 
 .timeline-track:hover,
@@ -1523,19 +1557,58 @@ button:disabled {
   position: absolute;
   top: 50%;
   z-index: 3;
-  width: 26px;
-  height: 26px;
+  width: max(38px, var(--view-range-width, 38px));
+  height: 18px;
   border: 2px solid var(--ink);
-  border-radius: 50%;
-  background: transparent;
+  border-radius: 999px;
+  background: rgba(241, 239, 231, 0.08);
   box-shadow: 0 0 0 2px var(--surface);
   transform: translate(-50%, -50%);
+  transition: left 220ms cubic-bezier(.2, .8, .2, 1), width 220ms cubic-bezier(.2, .8, .2, 1), border-color 160ms ease-out;
   pointer-events: none;
 }
 
 .timeline-control.is-synced .timeline-view-marker {
+  width: 26px;
+  height: 26px;
   border-color: var(--success);
+  background: transparent;
   box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px rgba(127, 168, 138, 0.2);
+}
+
+.timeline-preview {
+  position: absolute;
+  bottom: 34px;
+  z-index: 5;
+  display: grid;
+  width: min(250px, calc(100vw - 40px));
+  gap: 4px;
+  border: 1px solid var(--line-strong);
+  padding: 9px 11px;
+  color: var(--ink);
+  background: #111411;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.timeline-preview[hidden] {
+  display: none;
+}
+
+.timeline-preview time {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.62rem;
+}
+
+.timeline-preview span {
+  overflow: hidden;
+  font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .timeline-playhead {
@@ -1781,6 +1854,34 @@ button:disabled {
   background: transparent;
 }
 
+.token.is-looked-up,
+.current-preview-token.is-looked-up {
+  color: var(--history-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--history-accent) 45%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.token.is-saved-word,
+.current-preview-token.is-saved-word {
+  color: var(--saved-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--saved-accent) 60%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.token.is-looked-up rt,
+.current-preview-token.is-looked-up rt {
+  color: var(--history-accent);
+}
+
+.token.is-saved-word rt,
+.current-preview-token.is-saved-word rt {
+  color: var(--saved-accent);
+}
+
 rt {
   color: var(--accent);
   font-family: "Hiragino Sans", "Yu Gothic", sans-serif;
@@ -1886,9 +1987,9 @@ body.reader-focus-active {
 }
 
 .lookup-save.is-saved {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--saved-accent);
+  color: var(--saved-accent);
+  background: var(--saved-soft);
 }
 
 .close {

@@ -9,6 +9,10 @@
   --accent: #ed735b;
   --accent-soft: #2a1d1a;
   --success: #7fa88a;
+  --history-accent: #79a8b2;
+  --history-soft: #172326;
+  --saved-accent: #d6aa6d;
+  --saved-soft: #282117;
   --danger: #ee735e;
   color: var(--ink);
   background: var(--paper);
