@@ -1082,7 +1082,31 @@ function App() {
   }, [activeSuggestionIndex])
 
   useEffect(() => {
+    const handleSpacePlayback = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' && event.key !== ' ') return
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+      event.preventDefault()
+      if (event.repeat) return
+
+      const video = videoRef.current
+      if (video) {
+        if (video.paused || video.ended) {
+          void video.play().catch(() => setVideoError('Playback was blocked. Press play on the video once to continue.'))
+        } else {
+          video.pause()
+        }
+        return
+      }
+
+      const now = performance.now()
+      setTracker((state) => state.status === 'running'
+        ? { ...state, status: 'paused', anchorSubtitleMs: virtualTime(state, now), anchorClockMs: now }
+        : { ...state, status: 'running', anchorClockMs: now })
+    }
+
     const handleTypeToSearch = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
       if (focusMode || selectedLookup || clearConfirmOpen || event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return
       const target = event.target as HTMLElement | null
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
@@ -1099,9 +1123,16 @@ function App() {
       setActiveSuggestionIndex(0)
     }
 
+    const pipWindow = pictureInPictureWindowRef.current
+    window.addEventListener('keydown', handleSpacePlayback)
     window.addEventListener('keydown', handleTypeToSearch)
-    return () => window.removeEventListener('keydown', handleTypeToSearch)
-  }, [clearConfirmOpen, focusMode, lines.length, selectedAnime, selectedLookup])
+    pipWindow?.addEventListener('keydown', handleSpacePlayback)
+    return () => {
+      window.removeEventListener('keydown', handleSpacePlayback)
+      window.removeEventListener('keydown', handleTypeToSearch)
+      pipWindow?.removeEventListener('keydown', handleSpacePlayback)
+    }
+  }, [clearConfirmOpen, focusMode, lines.length, pictureInPicturePortalRoot, selectedAnime, selectedLookup])
 
   useEffect(() => {
     if (tracker.status !== 'running') return
@@ -2363,7 +2394,10 @@ function App() {
 
   function jumpToLookup(lookup: SavedLookup) {
     const line = lookupSourceLine(lookup)
-    if (line) jumpToLine(line)
+    if (!line) return
+    pendingLineRef.current = line.startMs
+    setHighlightedLineId(line.id)
+    reanchor(line)
   }
 
   function saveLookup(token: Token, line: SubtitleLine) {
