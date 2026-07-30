@@ -594,6 +594,16 @@ function favoriteWordId(lookup: SavedLookup) {
   return `${lookup.surface}|${lookup.reading}`
 }
 
+/**
+ * The hover preview is a strip of rows that slides, rather than three labels
+ * whose text is swapped. Stepping one line moves the strip by exactly one row
+ * so the lines appear to scroll past, in either direction.
+ */
+const PREVIEW_ROW_COUNT = 5
+const PREVIEW_CENTER_ROW = 2
+/** Must match --preview-row-height in the stylesheet. */
+const PREVIEW_ROW_HEIGHT = 22
+
 function StarIcon({ filled = false }: { filled?: boolean }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
@@ -608,11 +618,106 @@ function StarIcon({ filled = false }: { filled?: boolean }) {
   )
 }
 
+/** The usual share glyph: a box with an arrow leaving it. */
 function ShareIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17">
-      <path d="M8 12h9m-4-4 4 4-4 4M5 5v14" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path
+        d="M12 15V4m0 0L8.5 7.5M12 4l3.5 3.5M5 13v5.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V13"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
     </svg>
+  )
+}
+
+function CopyTextIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17">
+      <rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M15 5.5A1.5 1.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A1.5 1.5 0 0 0 5.5 15" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+function CopyLinkIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17">
+      <path
+        d="M10.5 13.5a3.5 3.5 0 0 0 5 0l2.5-2.5a3.54 3.54 0 0 0-5-5L11.75 7.25M13.5 10.5a3.5 3.5 0 0 0-5 0L6 13a3.54 3.54 0 0 0 5 5l1.25-1.25"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  )
+}
+
+/**
+ * One entry, shared by the history and the saved words, so a word reads the
+ * same wherever it is met. The checkbox only appears while the list is being
+ * picked over for export, which keeps the resting list compact.
+ */
+function LookupEntry({
+  lookup,
+  isFavorite,
+  isSelectable,
+  canJump,
+  onToggleSelect,
+  onToggleFavorite,
+  onJump,
+}: {
+  lookup: SavedLookup
+  isFavorite: boolean
+  isSelectable: boolean
+  canJump: boolean
+  onToggleSelect: () => void
+  onToggleFavorite: () => void
+  onJump: () => void
+}) {
+  const word = (
+    <span className="saved-word">
+      <strong>{lookup.surface}</strong>
+      {lookup.reading ? <span className="saved-reading">{lookup.reading}</span> : null}
+    </span>
+  )
+
+  return (
+    <li className="saved-item">
+      <div className="saved-item-top">
+        {isSelectable ? (
+          <label className="saved-check">
+            <input checked={lookup.selected} type="checkbox" onChange={onToggleSelect} />
+            {word}
+          </label>
+        ) : word}
+        <button
+          className={isFavorite ? 'star-button is-saved' : 'star-button'}
+          type="button"
+          aria-label={isFavorite ? `Remove ${lookup.surface} from saved words` : `Save ${lookup.surface}`}
+          aria-pressed={isFavorite}
+          onClick={onToggleFavorite}
+        >
+          <StarIcon filled={isFavorite} />
+        </button>
+      </div>
+      <p>{lookup.meaning}</p>
+      <button
+        className="lookup-sentence"
+        type="button"
+        disabled={!canJump}
+        onClick={onJump}
+        title={canJump ? 'Jump to this subtitle line' : 'Open the source subtitle to jump to this line'}
+      >
+        {lookup.sentence}
+      </button>
+      <small>{formatTime(lookup.startMs)}–{formatTime(lookup.endMs)}</small>
+    </li>
   )
 }
 
@@ -745,6 +850,8 @@ function App() {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
   const [activeSubtitleFile, setActiveSubtitleFile] = useState<SubtitleFile | null>(null)
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
+  /** The history is a reading list until export is asked for, then a picker. */
+  const [isExportPicking, setIsExportPicking] = useState(false)
   const [recentActivity, setRecentActivity] = useState(loadRecentActivity)
   const [loadingRecentId, setLoadingRecentId] = useState('')
   const [activeRecentId, setActiveRecentId] = useState('')
@@ -790,6 +897,7 @@ function App() {
   const timelinePreviewLineIndexRef = useRef<number | null>(null)
   const viewedSyncFrameRef = useRef<number | null>(null)
   const scrollSettleTimerRef = useRef<number | null>(null)
+  const previewSettleTimerRef = useRef<number | null>(null)
   const playingTimestampRef = useRef(0)
   const followCurrentRef = useRef(true)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
@@ -1482,6 +1590,19 @@ function App() {
     await copyShareUrl(buildShareUrl(), activeSubtitleFile ? 'Exact subtitle link copied' : 'Reader link copied')
   }
 
+  async function copyLineText(line: SubtitleLine) {
+    try {
+      await navigator.clipboard.writeText(line.plainText)
+      setShareStatus('Line text copied')
+    } catch {
+      setShareStatus('Could not copy the line')
+    }
+  }
+
+  async function copyLineLink(line: SubtitleLine) {
+    await copyShareUrl(buildShareUrl(line.startMs), 'Line link copied')
+  }
+
   async function shareSubtitleLine(line: SubtitleLine) {
     const shareUrl = buildShareUrl(line.startMs)
     const shareData = {
@@ -1629,40 +1750,89 @@ function App() {
     return timelineStart + progress * timelineDuration
   }
 
+  /** Fills the strip with the lines around `centerIndex`, oldest row first. */
+  function fillPreviewRows(centerIndex: number) {
+    const previewLines = timelinePreviewLinesRef.current
+    if (!previewLines) return
+    for (let row = 0; row < PREVIEW_ROW_COUNT; row += 1) {
+      const element = previewLines.querySelector<HTMLElement>(`[data-preview-row="${row}"]`)
+      if (!element) continue
+      const line = lines[centerIndex + row - PREVIEW_CENTER_ROW]
+      const time = element.querySelector<HTMLElement>('[data-row-time]')
+      const text = element.querySelector<HTMLElement>('[data-row-text]')
+      if (time) time.textContent = line ? formatTime(line.startMs) : ''
+      if (text) text.textContent = line?.plainText ?? ''
+      element.dataset.empty = line ? 'false' : 'true'
+    }
+  }
+
+  function setPreviewOffset(row: number, animate: boolean) {
+    const previewLines = timelinePreviewLinesRef.current
+    if (!previewLines) return
+    previewLines.style.transition = animate ? '' : 'none'
+    previewLines.style.transform = `translateY(${-(row - PREVIEW_CENTER_ROW) * PREVIEW_ROW_HEIGHT}px)`
+    previewLines.dataset.center = String(row)
+    if (!animate) void previewLines.offsetHeight
+  }
+
+  function stepPreviewTo(centerIndex: number) {
+    const previewLines = timelinePreviewLinesRef.current
+    if (!previewLines) return
+    const fromIndex = timelinePreviewLineIndexRef.current
+    timelinePreviewLineIndexRef.current = centerIndex
+
+    if (previewSettleTimerRef.current !== null) {
+      window.clearTimeout(previewSettleTimerRef.current)
+      previewSettleTimerRef.current = null
+    }
+
+    // Anything other than a single step has no in-between to animate, so the
+    // strip is simply rebuilt where the pointer landed.
+    if (fromIndex === null || Math.abs(centerIndex - fromIndex) !== 1) {
+      fillPreviewRows(centerIndex)
+      setPreviewOffset(PREVIEW_CENTER_ROW, false)
+      return
+    }
+
+    // A quick sweep can step again before the strip has re-centred, so the
+    // move is measured from where the strip actually sits, not from the middle.
+    const currentRow = Number(previewLines.dataset.center ?? PREVIEW_CENTER_ROW)
+    const targetRow = currentRow + (centerIndex - fromIndex)
+
+    if (targetRow < 0 || targetRow > PREVIEW_ROW_COUNT - 1) {
+      fillPreviewRows(centerIndex)
+      setPreviewOffset(PREVIEW_CENTER_ROW, false)
+      return
+    }
+
+    setPreviewOffset(targetRow, true)
+
+    // Once the slide has played, the strip is re-centred on the new line with
+    // the animation off, which leaves it ready to slide again either way.
+    previewSettleTimerRef.current = window.setTimeout(() => {
+      previewSettleTimerRef.current = null
+      if (timelinePreviewLineIndexRef.current !== centerIndex) return
+      fillPreviewRows(centerIndex)
+      setPreviewOffset(PREVIEW_CENTER_ROW, false)
+    }, 170)
+  }
+
   function updateTimelinePreview(clientX: number, target: HTMLElement) {
     const preview = timelinePreviewRef.current
     const indicator = timelineHoverIndicatorRef.current
     const previewLines = timelinePreviewLinesRef.current
     if (!preview || !indicator || !previewLines) return
-    const bounds = target.parentElement?.getBoundingClientRect()
-    if (!bounds) return
     const timestamp = timestampAtPosition(clientX, target)
     const line = nearestLineAt(timestamp)
     if (!line) return
     const linePosition = lines.findIndex((candidate) => candidate.id === line.id)
-    const previous = lines[Math.max(0, linePosition - 1)]
-    const next = lines[Math.min(lines.length - 1, linePosition + 1)]
     const steppedProgress = (line.startMs - timelineStart) / timelineDuration
     preview.hidden = false
     indicator.hidden = false
     preview.style.left = `${Math.min(0.86, Math.max(0.14, steppedProgress)) * 100}%`
     indicator.style.left = `clamp(4px, ${steppedProgress * 100}%, calc(100% - 4px))`
     if (timelinePreviewLineIndexRef.current === linePosition) return
-
-    const previousIndex = timelinePreviewLineIndexRef.current
-    previewLines.dataset.direction = previousIndex === null || linePosition >= previousIndex ? 'forward' : 'backward'
-    timelinePreviewLineIndexRef.current = linePosition
-    const previousText = previewLines.querySelector<HTMLElement>('[data-preview-previous]')
-    const currentTime = previewLines.querySelector<HTMLElement>('[data-preview-time]')
-    const currentText = previewLines.querySelector<HTMLElement>('[data-preview-current]')
-    const nextText = previewLines.querySelector<HTMLElement>('[data-preview-next]')
-    if (previousText) previousText.textContent = previous.plainText
-    if (currentTime) currentTime.textContent = formatTime(line.startMs)
-    if (currentText) currentText.textContent = line.plainText
-    if (nextText) nextText.textContent = next.plainText
-    previewLines.classList.remove('is-stepping')
-    void previewLines.offsetWidth
-    previewLines.classList.add('is-stepping')
+    stepPreviewTo(linePosition)
   }
 
   function hideTimelinePreview() {
@@ -2549,13 +2719,15 @@ function App() {
                       </button>
                       <span ref={timelineHoverIndicatorRef} className="timeline-hover-indicator" hidden aria-hidden="true" />
                       <div ref={timelinePreviewRef} className="timeline-preview" role="tooltip" hidden>
-                        <div ref={timelinePreviewLinesRef} className="timeline-preview-lines">
-                          <p className="timeline-preview-context" data-preview-previous />
-                          <p className="timeline-preview-current">
-                            <time data-preview-time>0:00</time>
-                            <span data-preview-current />
-                          </p>
-                          <p className="timeline-preview-context" data-preview-next />
+                        <div className="timeline-preview-viewport">
+                          <div ref={timelinePreviewLinesRef} className="timeline-preview-lines">
+                            {Array.from({ length: PREVIEW_ROW_COUNT }, (_, rowIndex) => (
+                              <p className="timeline-preview-row" key={rowIndex} data-preview-row={rowIndex}>
+                                <time data-row-time />
+                                <span data-row-text />
+                              </p>
+                            ))}
+                          </div>
                         </div>
                       </div>
                       <button
@@ -2661,7 +2833,7 @@ function App() {
                         onClick={(event) => {
                           if (!readerSettings.tapLineToSeek) return
                           const target = event.target as Element
-                          if (target.closest('.time, .line-share')) return
+                          if (target.closest('.time, .line-actions')) return
                           reanchor(line)
                         }}
                       >
@@ -2686,9 +2858,35 @@ function App() {
                             </button>
                           ))}
                         </p>
-                        <button className="line-share" type="button" onClick={() => void shareSubtitleLine(line)} aria-label={`Share subtitle line at ${formatTime(line.startMs)}`}>
-                          <ShareIcon />
-                        </button>
+                        <div className="line-actions">
+                          <button
+                            className="line-action"
+                            type="button"
+                            onClick={() => void copyLineText(line)}
+                            aria-label={`Copy the text of the line at ${formatTime(line.startMs)}`}
+                            title="Copy line text"
+                          >
+                            <CopyTextIcon />
+                          </button>
+                          <button
+                            className="line-action"
+                            type="button"
+                            onClick={() => void copyLineLink(line)}
+                            aria-label={`Copy a link to the line at ${formatTime(line.startMs)}`}
+                            title="Copy link to this line"
+                          >
+                            <CopyLinkIcon />
+                          </button>
+                          <button
+                            className="line-action"
+                            type="button"
+                            onClick={() => void shareSubtitleLine(line)}
+                            aria-label={`Share the line at ${formatTime(line.startMs)}`}
+                            title="Share this line"
+                          >
+                            <ShareIcon />
+                          </button>
+                        </div>
                       </li>
                     )
                   })}
@@ -2706,13 +2904,14 @@ function App() {
                 </div>
                 <span className="saved-count">{lookupHistory.length}</span>
               </header>
-              <p className="saved-summary">{lookupHistory.filter((lookup) => lookup.selected).length} selected for export</p>
-
-              {lookupHistory.length > 0 ? (
-                <div className="selection-actions">
-                  <button className="text-button" type="button" onClick={() => setAllLookupsSelected(true)}>Select all</button>
-                  <button className="text-button" type="button" onClick={() => setAllLookupsSelected(false)}>Deselect all</button>
-                </div>
+              {isExportPicking ? (
+                <>
+                  <p className="saved-summary">{lookupHistory.filter((lookup) => lookup.selected).length} selected for export</p>
+                  <div className="selection-actions">
+                    <button className="text-button" type="button" onClick={() => setAllLookupsSelected(true)}>Select all</button>
+                    <button className="text-button" type="button" onClick={() => setAllLookupsSelected(false)}>Deselect all</button>
+                  </div>
+                </>
               ) : null}
 
               {lookupHistory.length === 0 ? (
@@ -2722,55 +2921,45 @@ function App() {
                   <small>Words you tap appear here automatically.</small>
                 </div>
               ) : (
-                <ol className="saved-list">
+                <ol className={isExportPicking ? 'saved-list' : 'saved-list is-compact'}>
                   {lookupHistory.map((lookup) => (
-                    <li className="saved-item" key={lookup.id}>
-                      <div className="saved-item-top">
-                        <label className="saved-check">
-                          <input checked={lookup.selected} type="checkbox" onChange={() => toggleSavedLookup(lookup.id)} />
-                          <span>
-                            <strong>{lookup.surface}</strong>
-                            {lookup.reading ? <span className="saved-reading">{lookup.reading}</span> : null}
-                          </span>
-                        </label>
-                        <button
-                          className={isFavorite(lookup) ? 'star-button is-saved' : 'star-button'}
-                          type="button"
-                          aria-label={isFavorite(lookup) ? `Remove ${lookup.surface} from saved words` : `Save ${lookup.surface}`}
-                          aria-pressed={isFavorite(lookup)}
-                          onClick={() => toggleFavorite(lookup)}
-                        >
-                          <StarIcon filled={isFavorite(lookup)} />
-                        </button>
-                      </div>
-                      <p>{lookup.meaning}</p>
-                      <button
-                        className="lookup-sentence"
-                        type="button"
-                        disabled={!lookupSourceLine(lookup)}
-                        onClick={() => jumpToLookup(lookup)}
-                        title={lookupSourceLine(lookup) ? 'Jump to this subtitle line' : 'Open the source subtitle to jump to this line'}
-                      >
-                        {lookup.sentence}
-                      </button>
-                      <small>{formatTime(lookup.startMs)}–{formatTime(lookup.endMs)}</small>
-                    </li>
+                    <LookupEntry
+                      key={lookup.id}
+                      lookup={lookup}
+                      isFavorite={isFavorite(lookup)}
+                      isSelectable={isExportPicking}
+                      canJump={Boolean(lookupSourceLine(lookup))}
+                      onToggleSelect={() => toggleSavedLookup(lookup.id)}
+                      onToggleFavorite={() => toggleFavorite(lookup)}
+                      onJump={() => jumpToLookup(lookup)}
+                    />
                   ))}
                 </ol>
               )}
 
               <div className="saved-actions">
-                <div className="export-split">
-                  <button type="button" onClick={exportSelectedLookups} disabled={lookupHistory.every((lookup) => !lookup.selected)}>
-                    Export {exportFormat.toUpperCase()}
-                  </button>
-                  <select aria-label="Lookup history export format" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}>
-                    <option value="tsv">TSV · Anki</option>
-                    <option value="csv">CSV</option>
-                    <option value="txt">TXT</option>
-                  </select>
-                </div>
-                <button className="text-button danger-text" type="button" onClick={() => setClearConfirmOpen(true)} disabled={lookupHistory.length === 0}>Clear history</button>
+                {isExportPicking ? (
+                  <>
+                    <div className="export-split">
+                      <button type="button" onClick={exportSelectedLookups} disabled={lookupHistory.every((lookup) => !lookup.selected)}>
+                        Export {exportFormat.toUpperCase()}
+                      </button>
+                      <select aria-label="Lookup history export format" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}>
+                        <option value="tsv">TSV · Anki</option>
+                        <option value="csv">CSV</option>
+                        <option value="txt">TXT</option>
+                      </select>
+                    </div>
+                    <button className="text-button" type="button" onClick={() => setIsExportPicking(false)}>Done</button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" onClick={() => setIsExportPicking(true)} disabled={lookupHistory.length === 0}>
+                      Export…
+                    </button>
+                    <button className="text-button danger-text" type="button" onClick={() => setClearConfirmOpen(true)} disabled={lookupHistory.length === 0}>Clear history</button>
+                  </>
+                )}
               </div>
             </section>
 
@@ -2791,29 +2980,18 @@ function App() {
                   <small>Use the star in a lookup or in your history.</small>
                 </div>
               ) : (
-                <ol className="saved-list favorite-list">
+                <ol className="saved-list favorite-list is-compact">
                   {favoriteWords.map((lookup) => (
-                    <li className="saved-item" key={lookup.id}>
-                      <div className="saved-item-top">
-                        <span className="saved-word">
-                          <strong>{lookup.surface}</strong>
-                          {lookup.reading ? <span className="saved-reading">{lookup.reading}</span> : null}
-                        </span>
-                        <button className="star-button is-saved" type="button" aria-label={`Remove ${lookup.surface} from saved words`} onClick={() => toggleFavorite(lookup)}>
-                          <StarIcon filled />
-                        </button>
-                      </div>
-                      <p>{lookup.meaning}</p>
-                      <button
-                        className="lookup-sentence"
-                        type="button"
-                        disabled={!lookupSourceLine(lookup)}
-                        onClick={() => jumpToLookup(lookup)}
-                        title={lookupSourceLine(lookup) ? 'Jump to this subtitle line' : 'Open the source subtitle to jump to this line'}
-                      >
-                        {lookup.sentence}
-                      </button>
-                    </li>
+                    <LookupEntry
+                      key={lookup.id}
+                      lookup={lookup}
+                      isFavorite
+                      isSelectable={false}
+                      canJump={Boolean(lookupSourceLine(lookup))}
+                      onToggleSelect={() => toggleSavedLookup(lookup.id)}
+                      onToggleFavorite={() => toggleFavorite(lookup)}
+                      onJump={() => jumpToLookup(lookup)}
+                    />
                   ))}
                 </ol>
               )}
