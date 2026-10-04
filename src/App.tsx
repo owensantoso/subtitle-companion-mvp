@@ -1009,6 +1009,9 @@ function App() {
   const playingTimestampRef = useRef(0)
   const followCurrentRef = useRef(true)
   const linkedLine = Number(new URLSearchParams(window.location.search).get('line'))
+  const subtitleAttemptRef = useRef(0)
+  const localResumeRef = useRef<{ name: string; positionMs: number | null; attempt: number } | null>(null)
+  const sharedLineRef = useRef<number | null>(Number.isFinite(linkedLine) && linkedLine >= 0 ? linkedLine : null)
   const pendingLineRef = useRef<number | null>(Number.isFinite(linkedLine) && linkedLine >= 0 ? linkedLine : null)
 
   const current = currentSubtitle(lines, tracker, tick)
@@ -1252,7 +1255,17 @@ function App() {
     }
   }, [readerSettings.autoResumeFollow])
 
+  useEffect(() => {
+    const clearLocalResume = (event: Event) => {
+      if (event.target === fileInputRef.current) localResumeRef.current = null
+    }
+    document.addEventListener('cancel', clearLocalResume, true)
+    return () => document.removeEventListener('cancel', clearLocalResume, true)
+  }, [])
+
   useEffect(() => () => {
+    subtitleAttemptRef.current += 1
+    localResumeRef.current = null
     if (autoResumeTimerRef.current !== null) window.clearTimeout(autoResumeTimerRef.current)
     if (scrollAnimationRef.current !== null) window.cancelAnimationFrame(scrollAnimationRef.current)
     if (timelineBrowseFrameRef.current !== null) window.cancelAnimationFrame(timelineBrowseFrameRef.current)
@@ -1303,7 +1316,7 @@ function App() {
         setCatalogStatus(`${entries.length.toLocaleString()} anime titles ready`)
         const requestedAnime = new URLSearchParams(window.location.search).get('anime')
         const sharedEntry = entries.find((entry) => animeStateId(entry) === requestedAnime)
-        if (sharedEntry) {
+        if (sharedEntry && !deepLinkFileHandledRef.current) {
           setSubtitleFiles([])
           setFilesStatus('Loading available subtitle files…')
           setError('')
@@ -1350,7 +1363,9 @@ function App() {
     if (!requestedFile) return
     const file = subtitleFiles.find((candidate) => candidate.name === requestedFile)
     deepLinkFileHandledRef.current = true
+    const scheduledAttempt = subtitleAttemptRef.current
     const timer = window.setTimeout(() => {
+      if (scheduledAttempt !== subtitleAttemptRef.current) return
       if (!file) {
         setError('The shared subtitle file is no longer available. Choose another file for this anime.')
         return
@@ -1420,10 +1435,25 @@ function App() {
     }))
   }
 
-  function openSubtitle(name: string, text: string, recent?: Omit<RecentSubtitle, 'viewedAt'>) {
+  function beginSubtitleImport(positionMs: number | null = null) {
+    const attempt = { id: ++subtitleAttemptRef.current, positionMs }
+    localResumeRef.current = null
+    sharedLineRef.current = null
+    deepLinkFileHandledRef.current = true
+    setLoadingRecentId('')
+    setLoadingFileUrl('')
+    setError('')
+    return attempt
+  }
+
+  function ownsSubtitleImport(attempt: { id: number }) {
+    return attempt.id === subtitleAttemptRef.current
+  }
+
+  function openSubtitle(name: string, text: string, recent?: Omit<RecentSubtitle, 'viewedAt'>, requestedLine: number | null = null) {
     const parsed = parseSubtitle(name, text)
     clearLocalVideo()
-    const requestedLine = pendingLineRef.current
+    pendingLineRef.current = requestedLine
     const anchorSubtitleMs = requestedLine === null
       ? parsed[0]?.startMs ?? 0
       : parsed.length > 0
@@ -1502,17 +1532,22 @@ function App() {
   }
 
   async function handleFile(file?: File) {
+    const resume = localResumeRef.current
+    localResumeRef.current = null
     if (!file) return
+    const positionMs = resume?.name === file.name && resume.attempt === subtitleAttemptRef.current ? resume.positionMs : null
+    const attempt = beginSubtitleImport(positionMs)
     try {
-      setActiveSubtitleFile(null)
       const text = await file.text()
+      if (!ownsSubtitleImport(attempt)) return
       openSubtitle(file.name, text, {
         id: `local:${file.name}`,
         name: file.name,
         kind: 'local',
-      })
+      }, attempt.positionMs)
+      setActiveSubtitleFile(null)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not read this subtitle file.')
+      if (ownsSubtitleImport(attempt)) setError(caught instanceof Error ? caught.message : 'Could not read this subtitle file.')
     }
   }
 
@@ -1569,30 +1604,33 @@ function App() {
   }
 
   async function handleUrlLoad() {
+    const sourceUrl = url
+    const attempt = beginSubtitleImport()
     let text = ''
     try {
-      const response = await fetch(url)
+      const response = await fetch(sourceUrl)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       text = await response.text()
     } catch {
-      setError('This URL could not be loaded from the browser. The site may block cross-origin requests. Download the subtitle file and upload it here instead.')
+      if (ownsSubtitleImport(attempt)) setError('This URL could not be loaded from the browser. The site may block cross-origin requests. Download the subtitle file and upload it here instead.')
       return
     }
-
+    if (!ownsSubtitleImport(attempt)) return
     try {
-      setActiveSubtitleFile(null)
-      openSubtitle(url, text, {
-        id: `url:${url}`,
-        name: url.split('/').pop() || url,
+      openSubtitle(sourceUrl, text, {
+        id: `url:${sourceUrl}`,
+        name: sourceUrl.split('/').pop() || sourceUrl,
         kind: 'url',
-        url,
-      })
+        url: sourceUrl,
+      }, attempt.positionMs)
+      setActiveSubtitleFile(null)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unsupported subtitle format. Try .srt, .vtt, or .ass.')
+      if (ownsSubtitleImport(attempt)) setError(caught instanceof Error ? caught.message : 'Unsupported subtitle format. Try .srt, .vtt, or .ass.')
     }
   }
 
   function handleAnimeSelect(entry: AnimeCatalogEntry) {
+    beginSubtitleImport()
     setSubtitleFiles([])
     setFilesStatus('Loading available subtitle files…')
     setError('')
@@ -1606,6 +1644,7 @@ function App() {
   }
 
   function clearAnimeSearch() {
+    beginSubtitleImport()
     setAnimeQuery('')
     setActiveSuggestionIndex(0)
     setSelectedAnime(null)
@@ -1652,23 +1691,25 @@ function App() {
   }
 
   async function handleRecentSubtitle(recent: RecentSubtitle) {
-    pendingLineRef.current = Number.isFinite(recent.positionMs) ? recent.positionMs ?? null : null
+    const positionMs = Number.isFinite(recent.positionMs) ? recent.positionMs ?? null : null
     if (recent.kind === 'local') {
+      const attempt = beginSubtitleImport(positionMs)
+      localResumeRef.current = { name: recent.name, positionMs, attempt: attempt.id }
       fileInputRef.current?.click()
       return
     }
-
+    if (recent.kind === 'catalog' && recent.file) {
+      const entry = recent.animeId
+        ? animeCatalog.find((candidate) => animeStateId(candidate) === recent.animeId)
+        : undefined
+      if (entry) handleAnimeSelect(entry)
+    }
+    const attempt = beginSubtitleImport(positionMs)
     setLoadingRecentId(recent.id)
-    setError('')
-
     try {
       if (recent.kind === 'catalog' && recent.file) {
-        const entry = recent.animeId
-          ? animeCatalog.find((candidate) => animeStateId(candidate) === recent.animeId)
-          : undefined
-        if (entry) handleAnimeSelect(entry)
         const text = await loadAjattSubtitleFile(recent.file)
-        setActiveSubtitleFile(recent.file)
+        if (!ownsSubtitleImport(attempt)) return
         openSubtitle(`${recent.animeTitle ?? 'AJATT'} · ${recent.file.name}`, text, {
           id: recent.id,
           name: recent.name,
@@ -1677,23 +1718,26 @@ function App() {
           animeTitle: recent.animeTitle,
           file: recent.file,
           positionMs: recent.positionMs,
-        })
+        }, attempt.positionMs)
+        setActiveSubtitleFile(recent.file)
       } else if (recent.kind === 'url' && recent.url) {
         const response = await fetch(recent.url)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const text = await response.text()
+        if (!ownsSubtitleImport(attempt)) return
         openSubtitle(recent.url, text, {
           id: recent.id,
           name: recent.name,
           kind: recent.kind,
           url: recent.url,
           positionMs: recent.positionMs,
-        })
+        }, attempt.positionMs)
+        setActiveSubtitleFile(null)
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not reopen this subtitle.')
+      if (ownsSubtitleImport(attempt)) setError(caught instanceof Error ? caught.message : 'Could not reopen this subtitle.')
     } finally {
-      setLoadingRecentId('')
+      if (ownsSubtitleImport(attempt)) setLoadingRecentId('')
     }
   }
 
@@ -1904,29 +1948,30 @@ function App() {
   }
 
   async function handleAjattFile(file: SubtitleFile, preserveSharedLine = false) {
+    const entry = selectedAnime
+    const attempt = beginSubtitleImport(preserveSharedLine ? sharedLineRef.current : null)
     setLoadingFileUrl(file.url)
-    setError('')
     if (!preserveSharedLine) {
-      pendingLineRef.current = null
       const nextUrl = new URL(window.location.href)
       nextUrl.searchParams.delete('line')
       window.history.replaceState({}, '', nextUrl)
     }
     try {
       const text = await loadAjattSubtitleFile(file)
-      setActiveSubtitleFile(file)
-      openSubtitle(`${selectedAnime?.title ?? 'AJATT'} · ${file.name}`, text, {
+      if (!ownsSubtitleImport(attempt)) return
+      openSubtitle(`${entry?.title ?? 'AJATT'} · ${file.name}`, text, {
         id: `catalog:${file.url}`,
         name: file.name,
         kind: 'catalog',
-        animeId: selectedAnime ? animeStateId(selectedAnime) : undefined,
-        animeTitle: selectedAnime?.title,
+        animeId: entry ? animeStateId(entry) : undefined,
+        animeTitle: entry?.title,
         file,
-      })
+      }, attempt.positionMs)
+      setActiveSubtitleFile(file)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not load this subtitle file.')
+      if (ownsSubtitleImport(attempt)) setError(caught instanceof Error ? caught.message : 'Could not load this subtitle file.')
     } finally {
-      setLoadingFileUrl('')
+      if (ownsSubtitleImport(attempt)) setLoadingFileUrl('')
     }
   }
 
@@ -2561,6 +2606,7 @@ function App() {
                       placeholder="Try “One Punch Man” or ワンパンマン"
                       value={animeQuery}
                       onChange={(event) => {
+                        beginSubtitleImport()
                         setAnimeQuery(event.target.value)
                         setActiveSuggestionIndex(0)
                         setSelectedAnime(null)
