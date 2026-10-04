@@ -44,6 +44,25 @@ npm install
 npm run dev
 ```
 
+## Import regression checks
+
+Run `npm ci` and `npm test` with Node 20.19+ or 22.12+. The tests mount the app in
+headless Chromium through Playwright and start an owned local Vite server. Windows
+uses Chrome at its standard installation path when available. On other hosts,
+install the test browser with `npx playwright install chromium`, or set
+`CHROMIUM_PATH` to an existing compatible browser executable.
+
+All subtitle, catalog and dictionary requests use synthetic fixtures; other remote
+requests are blocked. Tests cover overlapping imports, stale errors/loading state,
+catalog selection, queued deep links and attempt-specific resume positions. The
+video fixture only checks attachment retention; real decoding, playback and native
+picture in picture still need separate browser checks. Chooser cancellation uses
+the native DOM event boundary, rather than accepting a particular OS dialog flow.
+
+For a baseline comparison, `SUBTITLE_TEST_ROOT` can point at a separate checkout
+with its own installed dependencies. The test module and browser remain those of
+the current checkout; the app served by Vite comes from the specified root.
+
 ## Static Build
 
 ```bash
