@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import kuromoji from 'kuromoji/build/kuromoji.js'
@@ -11,6 +11,8 @@ import {
 } from './subtitleSources'
 import type { AnimeCatalogEntry, SubtitleFile } from './subtitleSources'
 import './App.css'
+import { useReaderPersistence } from './readerPersistence'
+import type { SavedLookup, RecentSubtitle, RecentSearch } from './readerPersistence'
 
 type SubtitleLine = {
   id: string
@@ -49,69 +51,16 @@ type LocalVideo = {
   url: string
 }
 
-type SavedLookup = {
-  id: string
-  sourceName: string
-  surface: string
-  reading: string
-  meaning: string
-  sentence: string
-  startMs: number
-  endMs: number
-  lookedUpAt: string
-  selected: boolean
-}
-
 type SelectedLookup = {
   token: Token
   lookup: SavedLookup
 }
 
-type RecentSubtitle = {
-  id: string
-  name: string
-  kind: 'catalog' | 'url' | 'local'
-  viewedAt: string
-  positionMs?: number
-  animeId?: string
-  animeTitle?: string
-  file?: SubtitleFile
-  url?: string
-}
-
-type RecentSearch = {
-  id: string
-  title: string
-  japaneseName?: string
-  viewedAt: string
-}
-
-type RecentActivity = {
-  subtitles: RecentSubtitle[]
-  searches: RecentSearch[]
-}
-
-const legacySavedLookupsKey = 'subtitle-companion:saved-lookups:v1'
-const lookupHistoryKey = 'subtitle-companion:lookup-history:v1'
-const favoriteWordsKey = 'subtitle-companion:favorite-words:v1'
-const subtitleFontSizeKey = 'subtitle-companion:subtitle-font-size:v1'
-const readerSettingsKey = 'subtitle-companion:reader-settings:v1'
-const recentActivityKey = 'subtitle-companion:recent-activity:v1'
 const recentActivityLimit = 6
 
 type ExportFormat = 'tsv' | 'csv' | 'txt'
 type SubtitleDensity = 'compact' | 'comfortable'
 type MobileTab = 'home' | 'history' | 'saved'
-type ReaderSettings = {
-  furigana: boolean
-  furiganaOpacity: number
-  subtitleFontSize: number
-  dimInactive: boolean
-  density: SubtitleDensity
-  autoResumeFollow: boolean
-  autoResumeDelayMs: number
-  tapLineToSeek: boolean
-}
 
 type DocumentPictureInPictureApi = {
   requestWindow: (options?: { width?: number; height?: number }) => Promise<Window>
@@ -417,17 +366,6 @@ function makeLookupId(source: string, line: SubtitleLine, token: Token) {
   return [source, line.startMs, line.endMs, token.surface, line.plainText].join('|')
 }
 
-function loadLookups(key: string, fallbackKey?: string): SavedLookup[] {
-  try {
-    const raw = localStorage.getItem(key) ?? (fallbackKey ? localStorage.getItem(fallbackKey) : null)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
 function escapeTsv(value: string | number) {
   return String(value).replace(/\t/g, ' ').replace(/\r?\n/g, '<br>')
 }
@@ -476,60 +414,6 @@ function buildPlainText(lookups: SavedLookup[]) {
     lookup.sentence,
     `${formatTime(lookup.startMs)}–${formatTime(lookup.endMs)} · ${lookup.sourceName}`,
   ].join('\n')).join('\n\n')
-}
-
-function loadReaderSettings(): ReaderSettings {
-  const defaults: ReaderSettings = {
-    furigana: true,
-    furiganaOpacity: 100,
-    subtitleFontSize: 22,
-    dimInactive: true,
-    density: 'compact',
-    autoResumeFollow: true,
-    autoResumeDelayMs: 3000,
-    tapLineToSeek: true,
-  }
-
-  try {
-    const parsed = JSON.parse(localStorage.getItem(readerSettingsKey) ?? '{}') as Partial<ReaderSettings>
-    const legacyFontSize = Number(localStorage.getItem(subtitleFontSizeKey))
-    const params = new URLSearchParams(window.location.search)
-    const linkedFontSize = Number(params.get('font'))
-    const linkedOpacity = Number(params.get('furigana'))
-    const storedOpacity = Number(parsed.furiganaOpacity)
-    return {
-      furigana: typeof parsed.furigana === 'boolean' ? parsed.furigana : defaults.furigana,
-      furiganaOpacity: Number.isFinite(linkedOpacity) && params.has('furigana')
-        ? Math.min(100, Math.max(0, linkedOpacity))
-        : Number.isFinite(storedOpacity) ? Math.min(100, Math.max(0, storedOpacity)) : defaults.furiganaOpacity,
-      subtitleFontSize: [18, 22, 26, 30].includes(linkedFontSize)
-        ? linkedFontSize
-        : [18, 22, 26, 30].includes(Number(parsed.subtitleFontSize))
-        ? Number(parsed.subtitleFontSize)
-        : [18, 22, 26, 30].includes(legacyFontSize) ? legacyFontSize : defaults.subtitleFontSize,
-      dimInactive: typeof parsed.dimInactive === 'boolean' ? parsed.dimInactive : defaults.dimInactive,
-      density: parsed.density === 'comfortable' || parsed.density === 'compact' ? parsed.density : defaults.density,
-      autoResumeFollow: typeof parsed.autoResumeFollow === 'boolean' ? parsed.autoResumeFollow : defaults.autoResumeFollow,
-      autoResumeDelayMs: Number.isFinite(Number(parsed.autoResumeDelayMs))
-        ? Math.min(30_000, Math.max(500, Number(parsed.autoResumeDelayMs)))
-        : defaults.autoResumeDelayMs,
-      tapLineToSeek: typeof parsed.tapLineToSeek === 'boolean' ? parsed.tapLineToSeek : defaults.tapLineToSeek,
-    }
-  } catch {
-    return defaults
-  }
-}
-
-function loadRecentActivity(): RecentActivity {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(recentActivityKey) ?? '{}') as Partial<RecentActivity>
-    return {
-      subtitles: Array.isArray(parsed.subtitles) ? parsed.subtitles.slice(0, recentActivityLimit) : [],
-      searches: Array.isArray(parsed.searches) ? parsed.searches.slice(0, recentActivityLimit) : [],
-    }
-  } catch {
-    return { subtitles: [], searches: [] }
-  }
 }
 
 function animeStateId(entry: AnimeCatalogEntry) {
@@ -930,13 +814,11 @@ function App() {
   const [tracker, setTracker] = useState<Tracker>({ status: 'idle', anchorSubtitleMs: 0, anchorClockMs: performance.now(), playbackRate: 1 })
   const [tick, setTick] = useState(performance.now())
   const [selectedLookup, setSelectedLookup] = useState<SelectedLookup | null>(null)
-  const [readerSettings, setReaderSettings] = useState(loadReaderSettings)
+  const { readerSettings, setReaderSettings, lookupHistory, setLookupHistory, favoriteWords, setFavoriteWords, recentActivity, setRecentActivity, notices } = useReaderPersistence()
   const [dictionaryBuckets, setDictionaryBuckets] = useState<DictionaryBuckets>(seedBuckets)
   const [dictionaryStatus, setDictionaryStatus] = useState('Loading full JMdict...')
   const [tokenizer, setTokenizer] = useState<Tokenizer<IpadicFeatures> | null>(null)
   const [tokenizerStatus, setTokenizerStatus] = useState('Loading Kuromoji tokenizer...')
-  const [lookupHistory, setLookupHistory] = useState<SavedLookup[]>(() => loadLookups(lookupHistoryKey, legacySavedLookupsKey))
-  const [favoriteWords, setFavoriteWords] = useState<SavedLookup[]>(() => loadLookups(favoriteWordsKey))
   const [animeCatalog, setAnimeCatalog] = useState<AnimeCatalogEntry[]>([])
   const [catalogStatus, setCatalogStatus] = useState('Loading anime catalog…')
   const [animeQuery, setAnimeQuery] = useState('')
@@ -952,7 +834,6 @@ function App() {
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   /** The history is a reading list until export is asked for, then a picker. */
   const [isExportPicking, setIsExportPicking] = useState(false)
-  const [recentActivity, setRecentActivity] = useState(loadRecentActivity)
   const [loadingRecentId, setLoadingRecentId] = useState('')
   const [activeRecentId, setActiveRecentId] = useState('')
   const [mobileTab, setMobileTab] = useState<MobileTab>('home')
@@ -1237,18 +1118,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(lookupHistoryKey, JSON.stringify(lookupHistory))
-  }, [lookupHistory])
-
-  useEffect(() => {
-    localStorage.setItem(favoriteWordsKey, JSON.stringify(favoriteWords))
-  }, [favoriteWords])
-
-  useEffect(() => {
-    localStorage.setItem(readerSettingsKey, JSON.stringify(readerSettings))
-  }, [readerSettings])
-
-  useEffect(() => {
     if (!readerSettings.autoResumeFollow && autoResumeTimerRef.current !== null) {
       window.clearTimeout(autoResumeTimerRef.current)
       autoResumeTimerRef.current = null
@@ -1286,10 +1155,6 @@ function App() {
   }, [activeSubtitleFile, lines.length, readerSettings.furiganaOpacity, readerSettings.subtitleFontSize, selectedAnime])
 
   useEffect(() => {
-    localStorage.setItem(recentActivityKey, JSON.stringify(recentActivity))
-  }, [recentActivity])
-
-  useEffect(() => {
     if (!activeRecentId) return
     const id = window.setInterval(() => {
       setRecentActivity((currentActivity) => {
@@ -1304,7 +1169,24 @@ function App() {
       })
     }, 2000)
     return () => window.clearInterval(id)
-  }, [activeRecentId])
+  }, [activeRecentId, setRecentActivity])
+
+  const recordRecentSearch = useCallback((entry: AnimeCatalogEntry) => {
+    const nextSearch: RecentSearch = {
+      id: animeStateId(entry),
+      title: entry.title,
+      japaneseName: entry.japaneseName,
+      viewedAt: new Date().toISOString(),
+    }
+
+    setRecentActivity((currentActivity) => ({
+      ...currentActivity,
+      searches: [
+        nextSearch,
+        ...currentActivity.searches.filter((search) => search.id !== nextSearch.id),
+      ].slice(0, recentActivityLimit),
+    }))
+  }, [setRecentActivity])
 
   useEffect(() => {
     let cancelled = false
@@ -1334,7 +1216,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [recordRecentSearch])
 
   useEffect(() => {
     if (!selectedAnime) return
@@ -1402,23 +1284,6 @@ function App() {
       cancelled = true
     }
   }, [])
-
-  function recordRecentSearch(entry: AnimeCatalogEntry) {
-    const nextSearch: RecentSearch = {
-      id: animeStateId(entry),
-      title: entry.title,
-      japaneseName: entry.japaneseName,
-      viewedAt: new Date().toISOString(),
-    }
-
-    setRecentActivity((currentActivity) => ({
-      ...currentActivity,
-      searches: [
-        nextSearch,
-        ...currentActivity.searches.filter((search) => search.id !== nextSearch.id),
-      ].slice(0, recentActivityLimit),
-    }))
-  }
 
   function recordRecentSubtitle(subtitle: Omit<RecentSubtitle, 'viewedAt'>) {
     const nextSubtitle: RecentSubtitle = {
@@ -2557,6 +2422,7 @@ function App() {
 
   return (
     <main className={`app-shell mobile-tab-${mobileTab}`}>
+      {notices.length > 0 && <aside role="status" aria-label="Saving status">{notices.map(notice => <p key={notice}>{notice}</p>)}</aside>}
       <header className="topbar">
         <a className="brand" href="/" aria-label="Subtitle Companion home">
           <span className="brand-mark" aria-hidden="true">字</span>
