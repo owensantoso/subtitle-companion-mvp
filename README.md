@@ -63,6 +63,25 @@ For a baseline comparison, `SUBTITLE_TEST_ROOT` can point at a separate checkout
 with its own installed dependencies. The test module and browser remain those of
 the current checkout; the app served by Vite comes from the specified root.
 
+## Browser saving
+
+History, saved words, reader settings and recent activity are stored separately in
+this browser. Missing or valid data saves normally. If a saved collection cannot
+be read or contains invalid entries, usable entries remain available for this
+session, a notice explains that changes cannot be saved, and its original stored
+data is left untouched. Other healthy collections can still save. This release
+provides no automatic reset, cleanup or merge of damaged data.
+
+If saving fails (for example, browser storage is full or unavailable), the reader
+stays usable and shows a saving notice. A later change to that healthy collection
+tries saving again. Unsaved changes may be lost when the page closes. Legacy
+lookup history and font preferences remain supported; malformed legacy history
+does not create an empty replacement history key.
+
+`npm test` includes mounted browser persistence checks alongside the import
+regressions, using synthetic records and storage faults in fresh contexts. These
+checks do not use private browser data or certify native media/PiP behavior.
+
 ## Static Build
 
 ```bash
